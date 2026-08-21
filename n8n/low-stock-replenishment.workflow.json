@@ -1,0 +1,164 @@
+{
+  "name": "Low Stock Replenishment & Approval",
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Every 5 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "get-reorder",
+      "name": "Fetch reorder recommendations",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [180, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.BACKEND_URL}}/api/reorder",
+        "options": {},
+        "response": {
+          "responseFormat": "json"
+        }
+      }
+    },
+    {
+      "id": "has-items",
+      "name": "Needs replenishment?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [380, 0],
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "conditions": [
+            {
+              "leftValue": "={{ $json.itemCount }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        },
+        "options": {
+          "caseSensitive": true,
+          "typeValidation": "loose"
+        }
+      }
+    },
+    {
+      "id": "create-order",
+      "name": "Create procurement order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [580, -120],
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.BACKEND_URL}}/api/orders",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ source: 'n8n', items: $json.items.map(i => ({ sku: i.sku, qty: i.reorderQty })) }) }}",
+        "options": {},
+        "response": {
+          "responseFormat": "json"
+        }
+      }
+    },
+    {
+      "id": "build-approval",
+      "name": "Build procurement approval",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [580, 120],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "subject",
+              "value": "={{ 'Procurement approval needed: ' + $json.itemCount + ' products low on stock' }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "message",
+              "value": "={{ JSON.stringify($json.items) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "noop-when-ok",
+      "name": "Stock is fine",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [580, 300]
+    }
+  ],
+  "connections": {
+    "schedule": {
+      "main": [
+        [
+          {
+            "node": "get-reorder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-reorder": {
+      "main": [
+        [
+          {
+            "node": "has-items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "has-items": {
+      "main": [
+        [
+          {
+            "node": "create-order",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "build-approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "noop-when-ok",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,112 @@
+.topbar {
+  position: fixed;
+  top: 0;
+  left: var(--sidebar-width);
+  right: 0;
+  height: var(--topbar-height);
+  background: rgba(6, 8, 15, 0.8);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 32px;
+  z-index: 90;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.topbar-breadcrumb {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.topbar-breadcrumb span {
+  color: var(--text-muted);
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.topbar-live-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  background: var(--color-ok-bg);
+  border: 1px solid var(--color-ok-border);
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--color-ok);
+}
+
+.topbar-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-ok);
+  animation: pulse 1.5s ease infinite;
+}
+
+.topbar-detector-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  transition: all var(--transition-base);
+}
+
+.topbar-detector-status.online {
+  background: rgba(6, 214, 160, 0.08);
+  border: 1px solid rgba(6, 214, 160, 0.25);
+  color: var(--color-ok);
+}
+
+.topbar-detector-status.offline {
+  background: rgba(100, 116, 139, 0.08);
+  border: 1px solid rgba(100, 116, 139, 0.2);
+  color: var(--text-muted);
+}
+
+.topbar-detector-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transition: background var(--transition-base);
+}
+
+.topbar-detector-status.online .topbar-detector-dot {
+  background: var(--color-ok);
+  box-shadow: 0 0 8px rgba(6, 214, 160, 0.5);
+  animation: pulse 2s ease infinite;
+}
+
+.topbar-detector-status.offline .topbar-detector-dot {
+  background: var(--text-muted);
+}
+
+.topbar-time {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1024px) {
+  .topbar {
+    left: 0;
+    padding: 0 16px 0 64px;
+  }
+}
