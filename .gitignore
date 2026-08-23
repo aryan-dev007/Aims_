@@ -21,6 +21,8 @@ grocery.v9i.yolov8/
 grocery.v9i.yolov8.zip
 subset/
 unified_dataset/
+local_dataset_to_merge/
+New_dataset_with_metadats/
 
 # Runs (Training outputs, logs, large checkpoint files)
 runs/
