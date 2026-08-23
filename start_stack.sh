@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Start the full monitoring stack (WSL / Linux):
-#   backend (Express)  -> http://localhost:4000
-#   dashboard (Next.js) -> http://localhost:3000
+#   predict_server (Python) -> http://localhost:5555
+#   backend (Express)       -> http://localhost:4000
+#   frontend (Vite)         -> http://localhost:5173
 # Usage: bash start_stack.sh [--monitor SOURCE]
 set -euo pipefail
 cd "$(dirname "$0")"
 
 NODE="${NODE:-$(command -v node || echo "$HOME/.local/bin/node")}"
+PYTHON="${PYTHON:-$(command -v python3 || command -v python || echo "python")}"
 mkdir -p runs
 
 start() {
@@ -20,28 +22,27 @@ start() {
   fi
 }
 
-# Build the dashboard once if the production build is missing (fresh clone).
-if [[ ! -d "dashboard/.next/server" ]]; then
-  echo "[build] dashboard (first run)"
-  ( cd dashboard && PATH="$(dirname "$NODE"):$PATH" "$NODE" node_modules/next/dist/bin/next build )
-fi
+start predict_server "$PYTHON -u predict_server.py --port 5555" "predict_server.py"
+echo "Waiting for YOLO model to load..."
+sleep 6
 
 start backend  "cd backend && $NODE src/server.js" "src/server.js"
-start dashboard "cd dashboard && $NODE node_modules/next/dist/bin/next start -p 3000" "next-server"
+start frontend "cd frontend && npm run dev" "vite"
 
-echo "Backend:   http://localhost:4000  (health: curl localhost:4000/api/health)"
-echo "Dashboard: http://localhost:3000"
+echo "Predict Server: http://localhost:5555"
+echo "Backend:        http://localhost:4000  (health: curl localhost:4000/api/health)"
+echo "Frontend:       http://localhost:5173"
 
 if [[ "${1:-}" == "--monitor" ]]; then
   shift
   echo "Starting OpenCV monitor on ${1:-0} ..."
   if [[ "${1:-}" == -* ]]; then
     # Flags only (e.g. --monitor --no-display --conf 0.2)
-    exec python3 -u opencv_detect.py --api http://localhost:4000 "$@"
+    exec "$PYTHON" -u opencv_detect.py --api http://localhost:4000 "$@"
   else
     # Bare source (e.g. --monitor 0, --monitor runs/demo_shelf.mp4)
     source_arg="${1:-0}"
     shift 2>/dev/null || true
-    exec python3 -u opencv_detect.py --api http://localhost:4000 --source "$source_arg" "$@"
+    exec "$PYTHON" -u opencv_detect.py --api http://localhost:4000 --source "$source_arg" "$@"
   fi
 fi

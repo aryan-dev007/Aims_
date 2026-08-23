@@ -43,6 +43,38 @@ THRESHOLDS = {
     "Oreo": 5,
     "LaysClassic": 5,
     "DoritosNachoCheese": 5,
+    # Indian grocery categories
+    "CocaColaCan250ml": 4,
+    "Colgate75g": 4,
+    "Fanta500ml": 4,
+    "LaysMasala": 4,
+    "LiptonYellowLabelTea": 4,
+    "OreoBiscuitHalfRoll": 4,
+    "SafeguardSoapBar": 4,
+    "detergent": 4,
+    "ice_cream": 4,
+    "milk": 4,
+    "perfumes": 4,
+    "shampoo": 4,
+    "soap": 4,
+    "stationery": 4,
+    "toiletries": 4,
+    "toothpaste": 4,
+    "atta_flour": 3,
+    "biscuits": 4,
+    "chips_wafers": 4,
+    "chocolates": 4,
+    "coffee": 3,
+    "cooking_oil": 3,
+    "dal_pulses": 3,
+    "juices_packaged_drinks": 4,
+    "namkeen_snacks": 4,
+    "noodles_instant_food": 4,
+    "rice": 3,
+    "sauces_ketchup": 3,
+    "soft_drinks": 5,
+    "spices_masala": 3,
+    "tea": 3,
 }
 
 VIDEO_SUFFIXES = (".mp4", ".avi", ".mov", ".mkv")
@@ -454,9 +486,23 @@ def run_batch(args, net, names):
 
 def main():
     args = parse_args()
-    names = load_names(args.names)
+    
+    # Find the correct yaml for class names
+    names_path = args.names
+    if names_path == "data.yaml":
+        yaml_paths = [
+            "unified_dataset/data.yaml",
+            "data.yaml",
+            "focused_dataset/data.yaml"
+        ]
+        for p in yaml_paths:
+            if Path(p).exists():
+                names_path = p
+                break
+                
+    names = load_names(names_path)
     net = cv2.dnn.readNetFromONNX(args.model)
-    print(f"Loaded {args.model} | {len(names)} classes | imgsz {args.imgsz}")
+    print(f"Loaded {args.model} | {len(names)} classes from {names_path} | imgsz {args.imgsz}")
 
     source = args.source
     is_webcam = str(source) in ("0", "1", "2", "3")

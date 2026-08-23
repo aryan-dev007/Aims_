@@ -153,22 +153,26 @@ def decode_predictions(outputs, names, conf_threshold, iou_threshold, size, r, l
 
 
 def predict(image_b64: str, conf: float = 0.30):
-    """Run YOLO on a base64-encoded image, return JSON-serialisable dict."""
+    """Run YOLO on a base64-encoded image or local file path, return JSON-serialisable dict."""
     global MODEL, NAMES, IS_ONNX, ARGS
 
-    b64_data = image_b64
-    if "," in b64_data:
-        b64_data = b64_data.split(",", 1)[1]
+    # Check if the input is a local file path
+    if len(image_b64) < 1024 and os.path.exists(image_b64):
+        frame = cv2.imread(image_b64)
+    else:
+        b64_data = image_b64
+        if "," in b64_data:
+            b64_data = b64_data.split(",", 1)[1]
 
-    # Robust base64 parsing (strip whitespace, handle URL-safe and space replacing)
-    b64_data = b64_data.strip().replace(" ", "+").replace("-", "+").replace("_", "/")
-    padding = len(b64_data) % 4
-    if padding:
-        b64_data += "=" * (4 - padding)
+        # Robust base64 parsing (strip whitespace, handle URL-safe and space replacing)
+        b64_data = b64_data.strip().replace(" ", "+").replace("-", "+").replace("_", "/")
+        padding = len(b64_data) % 4
+        if padding:
+            b64_data += "=" * (4 - padding)
 
-    img_bytes = base64.b64decode(b64_data)
-    nparr = np.frombuffer(img_bytes, np.uint8)
-    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        img_bytes = base64.b64decode(b64_data)
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
     if frame is None:
         return {"ok": False, "error": "Could not decode image"}
