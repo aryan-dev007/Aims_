@@ -1,12 +1,18 @@
+require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
 const config = require("./config");
 const routes = require("./routes");
+const { testConnection } = require("./db");
+const pgInventory = require("./pgInventory");
 
 const app = express();
 const server = http.createServer(app);
+
+// Make pgInventory available to route handlers
+app.set("pgInventory", pgInventory);
 
 // Socket.IO with CORS for the Vite dev server
 const io = new Server(server, {
@@ -54,7 +60,16 @@ app.set("detectorStatus", () => {
   return Date.now() - lastDetectorPing < 10000; // active if pinged within 10s
 });
 
-server.listen(config.port, () => {
+server.listen(config.port, async () => {
   console.log(`Stock monitor backend listening on http://localhost:${config.port}`);
   console.log(`Socket.IO ready for real-time connections`);
+
+  // Initialize PostgreSQL (non-blocking: existing JSON store still works if PG is down)
+  const pgOk = await testConnection();
+  if (pgOk) {
+    console.log("[PG] PostgreSQL connected successfully");
+    await pgInventory.loadCache();
+  } else {
+    console.warn("[PG] PostgreSQL unavailable — running with JSON store only");
+  }
 });

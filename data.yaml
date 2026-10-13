@@ -1,67 +1,26 @@
-train: grocery.v9i.yolov8/train/images
-val: grocery.v9i.yolov8/valid/images
-test: grocery.v9i.yolov8/test/images
-nc: 62
+path: C:\Users\nikhi\Downloads\AIMS_20_CLEAN
+train: train/images
+val: valid/images
+test: test/images
+nc: 20
 names:
-- BargsBlack20Oz
-- BuenoShareSize
-- CheetosCrunchy
-- CheetosCrunchyFlaminHot
-- CheetosCrunchyFlaminHotLimon
-- CheetosCrunchyXXTRAFlaminHot
-- CheetosPuffs
-- CherryCocaCola20Oz
-- CherryVanillaCocaCola20Oz
-- ChipsAhoy
-- ChipsAhoyKingSize
-- CocaCola16Oz
-- CocaCola20Oz
-- CocaCola350Ml
-- CocaColaSpiced20Oz
-- CocaColaZero16Oz
-- Crunch
-- Crush16Oz
-- DietCocaCola20Oz
-- DietCokeCan16Oz
-- DoritosCoolRanch
-- DoritosNachoCheese
-- DoritosSpicyNacho
-- DrPapPepper1L
-- DrPapPepper20Oz
-- DrPapPepperCan16Oz
-- Fanta20Oz
-- FantaCan16Oz
-- FantaGrape20Oz
-- FantaZero20Oz
-- FunyunsOnionFlavoredRingsFlaminHot
-- LaysBarbecue
-- LaysClassic
-- LaysLimon
-- LennyLarrysBirthdayCake
-- LennyLarrysChocolateChips
-- LennyLarrysDoubleChocolateChips
-- LennyLarrysPeanutButter
-- LennyLarrysPeanutButterChocolateChips
-- LennyLarrysSnickerdoodle
-- MinuteMaidBlueRaspberry20Oz
-- MinuteMaidFruitPunch
-- MinuteMaidLemonade20Oz
-- MinuteMaidPinkLemonade
-- MountainDew16Oz
-- MtnDew16Oz
-- NerdsShareSize
-- Oreo
-- OreoDoubleStufKingSize
-- OreoKingSize
-- PaydayShareSize
-- SkittlesShareSize
-- SourPunchShareSize
-- Sprite20Oz
-- Sprite40Oz
-- SpriteCan16Oz
-- SpriteCherry20Oz
-- SpriteTropicalMix20Oz
-- SpriteZero20Oz
-- VanillaCocaCola20Oz
-- WhatchamacallitKingSize
-- ZeroCocaCola16Oz
+- Coca cola cold drink
+- Oreo biscuit
+- Lipton tea
+- Lays masala chips
+- Fanta cold drink
+- Soap bar
+- Colgate Paste
+- Britannia biscuits
+- Cadbury chocolate
+- Nescafe coffee
+- RedLabel Tea
+- Maggi Noodles
+- Chings Schezwan Chutney
+- Amul Item
+- TajMahal tea
+- DrOetker
+- Real juice
+- Bru coffee
+- Parle biscuit
+- Veeba sauce

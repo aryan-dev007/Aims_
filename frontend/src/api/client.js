@@ -58,9 +58,16 @@ export const getEvents = (limit = 50) =>
 export const getHealth = () => request('/api/health');
 
 // ---- Predict Image / Camera Snapshot ----
-export const predictImage = (image, conf = 0.15) =>
+export const predictImage = (image, conf = 0.45) =>
   request('/api/predict', {
     method: 'POST',
     body: JSON.stringify({ image, conf }),
   });
 
+// ---- PostgreSQL Inventory ----
+export const getPgInventory = () => request('/api/pg/inventory');
+export const getPgProductInventory = (className) =>
+  request(`/api/pg/inventory/${encodeURIComponent(className)}`);
+export const getPgDetectionLogs = (limit = 50) =>
+  request(`/api/pg/detection-logs?limit=${limit}`);
+export const getPgHealth = () => request('/api/pg/health');

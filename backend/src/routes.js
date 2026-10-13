@@ -11,7 +11,7 @@ router.get("/health", (req, res) => {
 });
 
 // Ingest a monitor.py JSON payload: { per_product: {...}, timestamp }
-router.post("/stock/ingest", (req, res) => {
+router.post("/stock/ingest", async (req, res) => {
   const payload = req.body;
   if (!payload || typeof payload !== "object" || !payload.per_product) {
     return res.status(400).json({ error: "Expected body: { per_product: {SKU: count}, timestamp? }" });
@@ -21,6 +21,19 @@ router.post("/stock/ingest", (req, res) => {
   req.app.get("detectorPing")();
 
   const result = svc.ingest(payload);
+
+  // Write to PostgreSQL (async, non-blocking)
+  const pgInv = req.app.get("pgInventory");
+  if (pgInv) {
+    pgInv.upsertDetection(payload.per_product).then(({ changed, snapshot }) => {
+      if (changed.length > 0) {
+        const io = req.app.get("io");
+        if (io) {
+          io.emit("pg:inventory:update", { snapshot, changed, timestamp: new Date().toISOString() });
+        }
+      }
+    }).catch((err) => console.error("[PG] Ingest error:", err.message));
+  }
 
   // Broadcast real-time update via Socket.IO
   const io = req.app.get("io");
@@ -187,7 +200,7 @@ function fallbackExecFile(image, conf) {
 }
 
 router.post("/predict", async (req, res) => {
-  const { image, conf = 0.30 } = req.body || {};
+  const { image, conf = 0.45 } = req.body || {};
   if (!image) {
     return res.status(400).json({ error: "Image data (base64 or path) required" });
   }
@@ -206,6 +219,20 @@ router.post("/predict", async (req, res) => {
     if (result.ok && result.per_product) {
       req.app.get("detectorPing")();
       const ingestResult = svc.ingest(result);
+
+      // Write to PostgreSQL (async, non-blocking)
+      const pgInv = req.app.get("pgInventory");
+      if (pgInv) {
+        pgInv.upsertDetection(result.per_product).then(({ changed, snapshot }) => {
+          if (changed.length > 0) {
+            const io2 = req.app.get("io");
+            if (io2) {
+              io2.emit("pg:inventory:update", { snapshot, changed, timestamp: new Date().toISOString() });
+            }
+          }
+        }).catch((err) => console.error("[PG] Predict ingest error:", err.message));
+      }
+
       const io = req.app.get("io");
       if (io) {
         io.emit("stock:update", {
@@ -294,6 +321,59 @@ router.post("/orders/:id/cancel", (req, res) => {
   });
   if (!order) return res.status(404).json({ error: "Order not found" });
   res.json(order);
+});
+
+// ======================================================================
+// PostgreSQL-backed inventory endpoints
+// ======================================================================
+
+// Full inventory from PostgreSQL
+router.get("/pg/inventory", async (req, res) => {
+  try {
+    const pgInv = req.app.get("pgInventory");
+    const snapshot = await pgInv.getInventorySnapshot();
+    res.json(snapshot);
+  } catch (err) {
+    console.error("[PG API] /pg/inventory error:", err.message);
+    res.status(500).json({ error: "Database query failed" });
+  }
+});
+
+// Single product inventory from PostgreSQL
+router.get("/pg/inventory/:className", async (req, res) => {
+  try {
+    const pgInv = req.app.get("pgInventory");
+    const product = await pgInv.getProductInventory(req.params.className);
+    if (!product) return res.status(404).json({ error: "Product not found" });
+    res.json(product);
+  } catch (err) {
+    console.error("[PG API] /pg/inventory/:className error:", err.message);
+    res.status(500).json({ error: "Database query failed" });
+  }
+});
+
+// Detection history from PostgreSQL
+router.get("/pg/detection-logs", async (req, res) => {
+  try {
+    const pgInv = req.app.get("pgInventory");
+    const limit = parseInt(req.query.limit, 10) || 100;
+    const logs = await pgInv.getDetectionLogs(limit);
+    res.json(logs);
+  } catch (err) {
+    console.error("[PG API] /pg/detection-logs error:", err.message);
+    res.status(500).json({ error: "Database query failed" });
+  }
+});
+
+// PostgreSQL health check
+router.get("/pg/health", async (req, res) => {
+  try {
+    const { testConnection } = require("./db");
+    const ok = await testConnection();
+    res.json({ postgresql: ok ? "connected" : "disconnected" });
+  } catch (err) {
+    res.json({ postgresql: "error", message: err.message });
+  }
 });
 
 module.exports = router;

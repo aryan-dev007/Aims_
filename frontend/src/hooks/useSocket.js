@@ -5,7 +5,7 @@ const SOCKET_URL = 'http://localhost:4000';
 
 /**
  * Custom hook that connects to the Socket.IO backend for real-time updates.
- * Returns { latestStock, latestFrame, detectorOnline, connected, detectionLog }
+ * Returns { latestStock, latestFrame, detectorOnline, connected, detectionLog, pgInventory }
  */
 export function useSocket() {
   const socketRef = useRef(null);
@@ -14,6 +14,7 @@ export function useSocket() {
   const [latestFrame, setLatestFrame] = useState(null);
   const [detectorOnline, setDetectorOnline] = useState(false);
   const [detectionLog, setDetectionLog] = useState([]);
+  const [pgInventory, setPgInventory] = useState(null);
   const lastFrameTime = useRef(0);
 
   useEffect(() => {
@@ -60,6 +61,11 @@ export function useSocket() {
       lastFrameTime.current = Date.now();
     });
 
+    // PostgreSQL inventory update (only fires when quantities actually change)
+    socket.on('pg:inventory:update', (data) => {
+      setPgInventory(data);
+    });
+
     socket.on('alert:acked', () => {
       // The polling hooks will pick up the update
     });
@@ -77,5 +83,6 @@ export function useSocket() {
     };
   }, []);
 
-  return { connected, latestStock, latestFrame, detectorOnline, detectionLog };
+  return { connected, latestStock, latestFrame, detectorOnline, detectionLog, pgInventory };
 }
+

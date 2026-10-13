@@ -150,20 +150,26 @@ export default function LiveMonitor() {
 
     if (video.readyState !== video.HAVE_ENOUGH_DATA) return null;
 
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
+    // Downscale to max 480px width for much faster transfer & inference
+    // (Full HD frames are ~2MB base64; 480px is ~80-120KB)
+    const srcW = video.videoWidth || 640;
+    const srcH = video.videoHeight || 480;
+    const MAX_W = 480;
+    const scale = srcW > MAX_W ? MAX_W / srcW : 1;
+    canvas.width = Math.round(srcW * scale);
+    canvas.height = Math.round(srcH * scale);
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     // Use lower quality for faster transfer during continuous mode
-    const quality = continuousScanRef.current ? 0.7 : 0.85;
+    const quality = continuousScanRef.current ? 0.65 : 0.80;
     const b64Image = canvas.toDataURL('image/jpeg', quality);
 
     setIsScanning(true);
     setScanError(null);
     const t0 = performance.now();
     try {
-      const res = await predictImage(b64Image, 0.30);
+      const res = await predictImage(b64Image, 0.45);
       const elapsed = Math.round(performance.now() - t0);
       setInferenceMs(elapsed);
       if (res.ok) {
@@ -190,8 +196,8 @@ export default function LiveMonitor() {
 
     while (continuousScanRef.current) {
       await captureAndDetect();
-      // Small breathing room to avoid hammering (50ms)
-      await new Promise((r) => setTimeout(r, 50));
+      // Breathing room between scans (200ms) to keep UI responsive
+      await new Promise((r) => setTimeout(r, 200));
     }
 
     scanningRef.current = false;
@@ -233,7 +239,7 @@ export default function LiveMonitor() {
       setScanError(null);
       const t0 = performance.now();
       try {
-        const res = await predictImage(b64, 0.30);
+        const res = await predictImage(b64, 0.45);
         setInferenceMs(Math.round(performance.now() - t0));
         if (res.ok) {
           setLocalResult(res);
@@ -262,7 +268,7 @@ export default function LiveMonitor() {
     setScanError(null);
     const t0 = performance.now();
     try {
-      const res = await predictImage(samplePath, 0.30);
+      const res = await predictImage(samplePath, 0.45);
       setInferenceMs(Math.round(performance.now() - t0));
       if (res.ok) {
         setLocalResult(res);

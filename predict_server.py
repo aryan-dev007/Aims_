@@ -25,54 +25,36 @@ import yaml
 
 # ── Thresholds (same as backend/config.js) ─────────────────────────
 THRESHOLDS = {
-    "CocaCola20Oz": 6,
-    "Sprite20Oz": 6,
-    "Fanta20Oz": 6,
-    "Oreo": 5,
-    "LaysClassic": 5,
-    "DoritosNachoCheese": 5,
-    # Indian grocery categories
-    "CocaColaCan250ml": 4,
-    "Colgate75g": 4,
-    "Fanta500ml": 4,
-    "LaysMasala": 4,
-    "LiptonYellowLabelTea": 4,
-    "OreoBiscuitHalfRoll": 4,
-    "SafeguardSoapBar": 4,
-    "detergent": 4,
-    "ice_cream": 4,
-    "milk": 4,
-    "perfumes": 4,
-    "shampoo": 4,
-    "soap": 4,
-    "stationery": 4,
-    "toiletries": 4,
-    "toothpaste": 4,
-    "atta_flour": 3,
-    "biscuits": 4,
-    "chips_wafers": 4,
-    "chocolates": 4,
-    "coffee": 3,
-    "cooking_oil": 3,
-    "dal_pulses": 3,
-    "juices_packaged_drinks": 4,
-    "namkeen_snacks": 4,
-    "noodles_instant_food": 4,
-    "rice": 3,
-    "sauces_ketchup": 3,
-    "soft_drinks": 5,
-    "spices_masala": 3,
-    "tea": 3,
+    "Coca cola cold drink": 5,
+    "Oreo biscuit": 4,
+    "Lipton tea": 3,
+    "Lays masala chips": 4,
+    "Fanta cold drink": 5,
+    "Soap bar": 4,
+    "Colgate Paste": 4,
+    "Britannia biscuits": 4,
+    "Cadbury chocolate": 5,
+    "Nescafe coffee": 3,
+    "RedLabel Tea": 3,
+    "Maggi Noodles": 4,
+    "Chings Schezwan Chutney": 3,
+    "Amul Item": 4,
+    "TajMahal tea": 3,
+    "DrOetker": 3,
+    "Real juice": 4,
+    "Bru coffee": 3,
+    "Parle biscuit": 4,
+    "Veeba sauce": 3,
 }
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="Persistent YOLO prediction server")
-    p.add_argument("--model", default="models/best.onnx", help="Path to YOLO weights (.pt or .onnx)")
+    p.add_argument("--model", default="models/best.pt", help="Path to YOLO weights (.pt or .onnx)")
     p.add_argument("--port", type=int, default=5555)
-    p.add_argument("--conf", type=float, default=0.30)
+    p.add_argument("--conf", type=float, default=0.45)
     p.add_argument("--iou", type=float, default=0.45)
-    p.add_argument("--imgsz", type=int, default=640)
+    p.add_argument("--imgsz", type=int, default=416)
     return p.parse_args()
 
 
@@ -185,7 +167,11 @@ def predict(image_b64: str, conf: float = 0.30):
         padded, r, left, top = letterbox(frame, ARGS.imgsz)
         blob = cv2.dnn.blobFromImage(padded, 1 / 255.0, (ARGS.imgsz, ARGS.imgsz), swapRB=True, crop=False)
         MODEL.setInput(blob)
-        outputs = MODEL.forward()
+        try:
+            outputs = MODEL.forward()
+        except cv2.error as e:
+            sys.stderr.write(f"[predict-server] ONNX forward error: {e}\n")
+            return {"ok": False, "error": f"ONNX inference failed: {e}. Try using .pt model instead."}
         
         raw_detections = decode_predictions(outputs, NAMES, conf, ARGS.iou, ARGS.imgsz, r, left, top)
         
@@ -278,10 +264,15 @@ class PredictHandler(BaseHTTPRequestHandler):
             self._respond(400, {"error": "Missing 'image' field"})
             return
 
-        conf = float(data.get("conf", 0.30))
+        conf = float(data.get("conf", 0.45))
 
         t0 = time.time()
-        result = predict(image, conf)
+        try:
+            result = predict(image, conf)
+        except Exception as e:
+            sys.stderr.write(f"[predict-server] Prediction error: {e}\n")
+            self._respond(500, {"ok": False, "error": f"Inference error: {e}"})
+            return
         elapsed = time.time() - t0
         result["inference_ms"] = round(elapsed * 1000)
 
@@ -313,8 +304,10 @@ class PredictHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, fmt, *args):
-        if "POST /predict" in str(args):
-            sys.stderr.write(f"[predict-server] {args[0]}\n")
+        try:
+            sys.stderr.write(f"[predict-server] {fmt % args}\n")
+        except Exception as e:
+            sys.stderr.write(f"[predict-server] Log error: {e} (fmt: {fmt}, args: {args})\n")
 
 
 def main():
@@ -328,8 +321,8 @@ def main():
         MODEL = cv2.dnn.readNetFromONNX(ARGS.model)
         # Find yaml for class names
         yaml_paths = [
-            "unified_dataset/data.yaml",
             "data.yaml",
+            "unified_dataset/data.yaml",
             "focused_dataset/data.yaml"
         ]
         for p in yaml_paths:
