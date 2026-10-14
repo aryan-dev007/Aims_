@@ -25,6 +25,7 @@ Usage:
 import argparse
 import base64
 import json
+import sys
 import threading
 import time
 import urllib.request
@@ -79,6 +80,8 @@ def parse_args():
                    help="max frames per second to stream to dashboard (default 5)")
     p.add_argument("--loop", action="store_true", help="loop video files indefinitely")
     p.add_argument("--no-display", action="store_true", help="run headless (no imshow)")
+    p.add_argument("--fallback-to-dataset", action="store_true",
+                   help="explicitly use validation images if the camera cannot provide frames")
     p.add_argument("--json", default=None, help="write latest stock JSON payload to this file")
     p.add_argument("--api", default=None,
                    help="Node.js backend base URL, e.g. http://localhost:4000")
@@ -160,7 +163,7 @@ def analyze(net, frame, names, conf, iou, imgsz):
     low_stock = {
         name: {"count": counts[name], "threshold": t, "needed": max(t - counts[name], 0)}
         for name, t in THRESHOLDS.items()
-        if counts[name] > 0 and counts[name] < t
+        if counts[name] < t
     }
     return counts, low_stock, detections
 
@@ -200,35 +203,28 @@ def draw_hud(frame, fps, timestamp, counts, low_stock):
 class FrameGrabber:
     """Reads frames on a background thread so detection never blocks on I/O."""
 
-    def __init__(self, source, loop=False):
+    def __init__(self, source, loop=False, fallback_to_dataset=False):
         self.source = source
         self.loop = loop
+        self.is_camera = isinstance(source, int) or str(source) in ("0", "1", "2", "3")
         self.stopped = False
         self.frame = None
         self.frames_read = 0
         self.use_image_fallback = False
+        self.fallback_to_dataset = fallback_to_dataset
+        self.error = None
         self.image_files = []
         self.img_idx = 0
 
         # Attempt to open VideoCapture
-        self.cap = cv2.VideoCapture(source)
+        if self.is_camera and sys.platform == "win32":
+            self.cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+        else:
+            self.cap = cv2.VideoCapture(source)
         if not self.cap.isOpened():
             self.cap.release()
             self.cap = None
-            # Fall back to dataset images if available
-            fallback_dirs = [
-                Path("subset/valid/images"),
-                Path("grocery.v9i.yolov8/valid/images"),
-            ]
-            for d in fallback_dirs:
-                if d.exists():
-                    self.image_files = sorted(list(d.glob("*.jpg")) + list(d.glob("*.png")))
-                    if self.image_files:
-                        self.use_image_fallback = True
-                        print(f"[FrameGrabber] Camera {source} unavailable. Falling back to {len(self.image_files)} sample images in {d}")
-                        break
-
-            if not self.use_image_fallback:
+            if not self.fallback_to_dataset or not self._init_fallback():
                 raise RuntimeError(f"Cannot open video/camera source: {source}")
 
         if self.cap and (isinstance(source, int) or str(source) in ("0", "1", "2", "3")):
@@ -272,13 +268,15 @@ class FrameGrabber:
                 if not ok or frame is None:
                     failed_reads += 1
                     if failed_reads >= 3:
-                        print("[FrameGrabber] Live camera stream failed. Switching to sample shelf images…")
-                        if not self._init_fallback():
-                            if self.loop and self.cap:
-                                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                                continue
-                            self.stopped = True
-                            break
+                        if self.loop and self.cap and not self.is_camera:
+                            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            failed_reads = 0
+                            continue
+                        if self.fallback_to_dataset and self._init_fallback():
+                            continue
+                        self.error = RuntimeError("Camera/video stopped producing frames")
+                        print(f"[FrameGrabber] ERROR: {self.error}")
+                        self.stopped = True
                         continue
                     time.sleep(0.1)
                     continue
@@ -328,12 +326,18 @@ def stream_frame(api, annotated, fps, counts, low_stock):
         pass
 
 
-def emit(counts, low_stock, json_path, api, save_dir=None, frame=None, filename="frame"):
+def emit(counts, low_stock, json_path, api, save_dir=None, frame=None, filename="frame",
+         names=None):
     low_stock = low_stock or {}
+    class_names = names.values() if names else counts.keys()
+    per_product = {
+        name: int(counts.get(name, 0))
+        for name in class_names
+    }
     payload = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "total_units": int(sum(counts.values())),
-        "per_product": dict(counts),
+        "total_units": int(sum(per_product.values())),
+        "per_product": per_product,
         "low_stock": low_stock,
         "alerts": len(low_stock),
     }
@@ -348,7 +352,13 @@ def emit(counts, low_stock, json_path, api, save_dir=None, frame=None, filename=
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
-                print(f"[{time.strftime('%H:%M:%S')}] [INGEST] HTTP {resp.status}: {dict(counts)}")
+                result = json.loads(resp.read().decode("utf-8"))
+                pg_result = result.get("postgres", {})
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] [INGEST] HTTP {resp.status}; "
+                    f"PostgreSQL changed={pg_result.get('changed', [])}, "
+                    f"unknown={pg_result.get('unknown', [])}"
+                )
         except Exception as e:
             print(f"[INGEST] failed -> {api}: {e}")
     if save_dir and frame is not None:
@@ -367,7 +377,11 @@ def run_live(args, net, names):
     is_url = str(source).startswith(("rtsp://", "http://", "https://"))
 
     try:
-        grabber = FrameGrabber(int(source) if is_webcam else source, loop=args.loop)
+        grabber = FrameGrabber(
+            int(source) if is_webcam else source,
+            loop=args.loop,
+            fallback_to_dataset=args.fallback_to_dataset,
+        )
     except RuntimeError as e:
         hint = ("\nNo webcam available. On WSL2 enable USB/webcam passthrough "
                 "(usbipd-win) or use a video/RTSP source, e.g. "
@@ -408,7 +422,7 @@ def run_live(args, net, names):
 
             # Ingest stock counts to backend (throttled)
             if args.api and now - last_ingest >= args.ingest_interval:
-                emit(counts, low_stock, args.json, args.api)
+                emit(counts, low_stock, args.json, args.api, names=names)
                 last_ingest = now
 
             # Stream annotated frame to dashboard (throttled by stream_fps)
@@ -439,6 +453,8 @@ def run_live(args, net, names):
     finally:
         grabber.close()
         cv2.destroyAllWindows()
+    if grabber.error:
+        raise SystemExit(f"[LIVE] {grabber.error}")
     print(f"Live run finished: {frame_idx} frames analysed.")
 
 
@@ -455,15 +471,15 @@ def run_batch(args, net, names):
         counts, _, detections = analyze(net, frame, names, args.conf, args.iou, args.imgsz)
         total.update(counts)
         annotated = draw(frame.copy(), detections)
-        emit(counts, None, None, None, args.save, annotated, img.stem)
+        emit(counts, None, None, None, args.save, annotated, img.stem, names)
         print(f"{img.name}: {dict(counts)}")
     low_stock = {
         name: {"count": total[name], "threshold": t, "needed": max(t - total[name], 0)}
         for name, t in THRESHOLDS.items()
-        if total[name] > 0 and total[name] < t
+        if total[name] < t
     }
     print(f"TOTAL units: {sum(total.values())}")
-    emit(total, low_stock, args.json, args.api)
+    emit(total, low_stock, args.json, args.api, names=names)
 
 
 def main():

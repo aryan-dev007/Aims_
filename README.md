@@ -65,6 +65,12 @@ python opencv_detect.py --source rtsp://user:pass@192.168.1.20/stream --api http
 # Headless (no display), e.g. for a Raspberry Pi / server:
 python opencv_detect.py --source 0 --no-display --api http://localhost:4000 --ingest-interval 5
 
+# OpenCV inventory scans include every model class; products not seen in the
+# current full-shelf view are saved as quantity 0. Point the camera at the
+# entire shelf. Dataset-image fallback is opt-in so sample images cannot
+# silently overwrite live inventory:
+python opencv_detect.py --source 0 --api http://localhost:4000 --fallback-to-dataset
+
 # Build a demo "shelf scan" video from the dataset to test live mode without a camera:
 python make_demo_video.py --n 6 --out runs/demo_shelf.mp4
 
@@ -105,6 +111,9 @@ npm start        # http://localhost:4000
 | POST | `/api/stock/ingest` | Accept `{ per_product, timestamp }`, update DB, open/close alerts |
 | GET  | `/api/stock` | All SKUs with live counts, thresholds, status |
 | GET  | `/api/stock/:sku` | Single product |
+| GET  | `/api/pg/inventory` | Current quantities stored in PostgreSQL |
+| GET  | `/api/pg/detection-logs?limit=10` | Recent PostgreSQL quantity changes |
+| GET  | `/api/pg/health` | PostgreSQL connection status |
 | GET  | `/api/alerts` | Low-stock alerts (`?active=false` for all) |
 | POST | `/api/alerts/:id/ack` | Acknowledge an alert |
 | GET  | `/api/reorder` | Procurement recommendation (`reorderQty = threshold*2 - count`) |
@@ -139,6 +148,9 @@ The dashboard proxies `/api/*` to the backend (see `next.config.mjs`) so it work
 without extra configuration. Override with `NEXT_PUBLIC_API_URL` if the backend
 is elsewhere. The dashboard polls the backend every 5s: live stock table,
 low-stock alerts with acknowledge, procurement recommendations, and summary stats.
+The Inventory page shows detected products from PostgreSQL with their database
+product ID, quantity, and last-detected timestamp; products with quantity 0 are
+omitted from that view.
 
 ## Full training (recommended — GPU)
 

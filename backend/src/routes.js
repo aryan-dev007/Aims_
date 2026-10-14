@@ -4,6 +4,34 @@ const svc = require("./stockService");
 
 const router = express.Router();
 
+async function persistDetections(req, perProduct) {
+  const pgInv = req.app.get("pgInventory");
+  if (!pgInv) {
+    const error = new Error("PostgreSQL inventory service is unavailable");
+    error.code = "PG_INVENTORY_UPDATE";
+    throw error;
+  }
+
+  try {
+    const result = await pgInv.upsertDetection(perProduct);
+    if (result.changed.length > 0) {
+      const io = req.app.get("io");
+      if (io) {
+        io.emit("pg:inventory:update", {
+          snapshot: result.snapshot,
+          changed: result.changed,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+    return result;
+  } catch (cause) {
+    const error = new Error(`PostgreSQL inventory update failed: ${cause.message}`);
+    error.code = "PG_INVENTORY_UPDATE";
+    throw error;
+  }
+}
+
 // Health
 router.get("/health", (req, res) => {
   const detectorOnline = req.app.get("detectorStatus")();
@@ -17,23 +45,16 @@ router.post("/stock/ingest", async (req, res) => {
     return res.status(400).json({ error: "Expected body: { per_product: {SKU: count}, timestamp? }" });
   }
 
-  // Mark detector as active
-  req.app.get("detectorPing")();
-
-  const result = svc.ingest(payload);
-
-  // Write to PostgreSQL (async, non-blocking)
-  const pgInv = req.app.get("pgInventory");
-  if (pgInv) {
-    pgInv.upsertDetection(payload.per_product).then(({ changed, snapshot }) => {
-      if (changed.length > 0) {
-        const io = req.app.get("io");
-        if (io) {
-          io.emit("pg:inventory:update", { snapshot, changed, timestamp: new Date().toISOString() });
-        }
-      }
-    }).catch((err) => console.error("[PG] Ingest error:", err.message));
+  let postgres;
+  try {
+    postgres = await persistDetections(req, payload.per_product);
+  } catch (err) {
+    console.error("[PG] Ingest error:", err.message);
+    return res.status(503).json({ error: err.message });
   }
+
+  req.app.get("detectorPing")();
+  const result = svc.ingest(payload);
 
   // Broadcast real-time update via Socket.IO
   const io = req.app.get("io");
@@ -48,7 +69,10 @@ router.post("/stock/ingest", async (req, res) => {
     });
   }
 
-  res.json(result);
+  res.json({
+    ...result,
+    postgres: { changed: postgres.changed, unknown: postgres.unknown },
+  });
 });
 
 // All products with live counts, thresholds and status
@@ -217,21 +241,9 @@ router.post("/predict", async (req, res) => {
 
     // Ingest detections + broadcast via Socket.IO
     if (result.ok && result.per_product) {
+      const postgres = await persistDetections(req, result.per_product);
       req.app.get("detectorPing")();
       const ingestResult = svc.ingest(result);
-
-      // Write to PostgreSQL (async, non-blocking)
-      const pgInv = req.app.get("pgInventory");
-      if (pgInv) {
-        pgInv.upsertDetection(result.per_product).then(({ changed, snapshot }) => {
-          if (changed.length > 0) {
-            const io2 = req.app.get("io");
-            if (io2) {
-              io2.emit("pg:inventory:update", { snapshot, changed, timestamp: new Date().toISOString() });
-            }
-          }
-        }).catch((err) => console.error("[PG] Predict ingest error:", err.message));
-      }
 
       const io = req.app.get("io");
       if (io) {
@@ -256,10 +268,14 @@ router.post("/predict", async (req, res) => {
           });
         }
       }
+      result.postgres = { changed: postgres.changed, unknown: postgres.unknown };
     }
     res.json(result);
   } catch (err) {
     console.error("[PREDICT ERROR]", err);
+    if (err.code === "PG_INVENTORY_UPDATE") {
+      return res.status(503).json({ error: err.message });
+    }
     res.status(500).json({ error: "Prediction failed", details: err.message });
   }
 });

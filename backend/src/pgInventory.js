@@ -1,104 +1,76 @@
 /**
  * PostgreSQL inventory service.
  *
- * Handles upserting detection results into PostgreSQL with change-detection
- * logic: a product's quantity is only updated when the new value differs from
- * the current stored value. This prevents frame-by-frame duplicate writes
- * (e.g. seeing Maggi=5 on 100 consecutive frames writes only once).
- *
- * Detection logs are recorded only when a quantity actually changes, providing
- * a clean audit trail.
+ * PostgreSQL is the source of truth for quantity comparisons. A detection
+ * update and its audit log entry are committed atomically.
  */
-const { query } = require("./db");
+const { pool, query } = require("./db");
 
-// In-memory cache of the last-written quantities so we can skip
-// no-change writes without hitting the DB every frame.
-const _quantityCache = new Map(); // class_name -> quantity
-
-/**
- * Load the current inventory from PostgreSQL into the in-memory cache.
- * Called once at startup.
- */
 async function loadCache() {
-  try {
-    const rows = await query(`
-      SELECT p.class_name, i.quantity
-      FROM inventory i
-      JOIN products p ON p.id = i.product_id
-    `);
-    for (const row of rows) {
-      _quantityCache.set(row.class_name, row.quantity);
-    }
-    console.log(`[PG-INV] Cache loaded with ${_quantityCache.size} products`);
-  } catch (err) {
-    console.error("[PG-INV] Failed to load cache:", err.message);
-  }
+  const result = await query("SELECT COUNT(*)::int AS count FROM inventory");
+  console.log(`[PG-INV] Verified ${result[0].count} inventory rows`);
 }
 
-/**
- * Upsert a detection payload into PostgreSQL.
- *
- * @param {Record<string, number>} perProduct  { "Maggi Noodles": 5, "Lays masala chips": 7, … }
- * @returns {{ changed: string[], snapshot: Array<{class_name, quantity, updated_at}> }}
- */
 async function upsertDetection(perProduct) {
-  const changed = [];
-  const now = new Date();
-
-  for (const [className, rawQty] of Object.entries(perProduct)) {
-    const qty = Math.floor(Number(rawQty));
-    if (!Number.isFinite(qty) || qty < 0) continue;
-
-    // Skip if the quantity hasn't changed (prevents duplicate writes from
-    // seeing the same frame repeatedly).
-    const cached = _quantityCache.get(className);
-    if (cached !== undefined && cached === qty) continue;
-
-    try {
-      // Get the product id for this class_name
-      const productRows = await query(
-        "SELECT id FROM products WHERE class_name = $1",
-        [className]
-      );
-      if (productRows.length === 0) {
-        // Unknown class — skip silently (don't create phantom products)
-        continue;
-      }
-      const productId = productRows[0].id;
-
-      // Update inventory
-      await query(
-        `UPDATE inventory
-         SET quantity = $1, updated_at = $2
-         WHERE product_id = $3`,
-        [qty, now, productId]
-      );
-
-      // Log the change
-      await query(
-        `INSERT INTO detection_logs (product_id, quantity, detected_at)
-         VALUES ($1, $2, $3)`,
-        [productId, qty, now]
-      );
-
-      _quantityCache.set(className, qty);
-      changed.push(className);
-    } catch (err) {
-      console.error(`[PG-INV] Error upserting ${className}:`, err.message);
-    }
+  if (!perProduct || typeof perProduct !== "object" || Array.isArray(perProduct)) {
+    throw new TypeError("per_product must be an object of product names and quantities");
   }
 
-  // Return a snapshot of the full current inventory (for broadcasting)
-  const snapshot = await getInventorySnapshot();
-  return { changed, snapshot };
-}
+  const entries = Object.entries(perProduct).map(([className, rawQty]) => {
+    const quantity = Number(rawQty);
+    if (!Number.isInteger(quantity) || quantity < 0) {
+      throw new TypeError(`Invalid quantity for ${className}: expected a non-negative integer`);
+    }
+    return [className, quantity];
+  });
 
-/**
- * Return the full current inventory as an array.
- */
-async function getInventorySnapshot() {
+  const client = await pool.connect();
+  const changed = [];
+  const unknown = [];
+
   try {
-    const rows = await query(`
+    await client.query("BEGIN");
+
+    const products = await client.query(
+      "SELECT class_name FROM products WHERE class_name = ANY($1::text[])",
+      [entries.map(([className]) => className)]
+    );
+    const known = new Set(products.rows.map((row) => row.class_name));
+    for (const [className] of entries) {
+      if (!known.has(className)) unknown.push(className);
+    }
+
+    for (const [className, quantity] of entries) {
+      if (!known.has(className)) continue;
+
+      const result = await client.query(
+        `WITH updated AS (
+           UPDATE inventory i
+           SET quantity = $1, updated_at = NOW()
+           FROM products p
+           WHERE p.id = i.product_id
+             AND p.class_name = $2
+             AND i.quantity IS DISTINCT FROM $1
+           RETURNING p.id AS product_id, p.class_name, i.quantity, i.updated_at
+         ),
+         logged AS (
+           INSERT INTO detection_logs (product_id, quantity, detected_at)
+           SELECT product_id, quantity, updated_at
+           FROM updated
+           RETURNING product_id
+         )
+         SELECT updated.class_name
+         FROM updated
+         JOIN logged USING (product_id)`,
+        [quantity, className]
+      );
+
+      if (result.rows.length) {
+        changed.push(className);
+      }
+    }
+
+    const snapshot = await client.query(`
       SELECT
         p.id              AS product_id,
         p.class_id,
@@ -111,54 +83,57 @@ async function getInventorySnapshot() {
       JOIN products p ON p.id = i.product_id
       ORDER BY p.class_id
     `);
-    return rows;
+
+    await client.query("COMMIT");
+    return { changed, unknown, snapshot: snapshot.rows };
   } catch (err) {
-    console.error("[PG-INV] Snapshot query failed:", err.message);
-    return [];
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
   }
 }
 
-/**
- * Return a single product's inventory info.
- */
+async function getInventorySnapshot() {
+  return query(`
+    SELECT
+      p.id              AS product_id,
+      p.class_id,
+      p.class_name,
+      p.product_name,
+      p.category,
+      i.quantity,
+      i.updated_at
+    FROM inventory i
+    JOIN products p ON p.id = i.product_id
+    ORDER BY p.class_id
+  `);
+}
+
 async function getProductInventory(className) {
-  try {
-    const rows = await query(
-      `SELECT
-        p.id AS product_id, p.class_id, p.class_name, p.product_name,
-        p.category, i.quantity, i.updated_at
-       FROM inventory i
-       JOIN products p ON p.id = i.product_id
-       WHERE p.class_name = $1`,
-      [className]
-    );
-    return rows[0] || null;
-  } catch (err) {
-    console.error("[PG-INV] Product query failed:", err.message);
-    return null;
-  }
+  const rows = await query(
+    `SELECT
+      p.id AS product_id, p.class_id, p.class_name, p.product_name,
+      p.category, i.quantity, i.updated_at
+     FROM inventory i
+     JOIN products p ON p.id = i.product_id
+     WHERE p.class_name = $1`,
+    [className]
+  );
+  return rows[0] || null;
 }
 
-/**
- * Return recent detection logs, newest first.
- */
 async function getDetectionLogs(limit = 100) {
-  try {
-    const rows = await query(
-      `SELECT
-        dl.id, dl.quantity, dl.detected_at,
-        p.class_name, p.product_name
-       FROM detection_logs dl
-       JOIN products p ON p.id = dl.product_id
-       ORDER BY dl.detected_at DESC
-       LIMIT $1`,
-      [limit]
-    );
-    return rows;
-  } catch (err) {
-    console.error("[PG-INV] Detection logs query failed:", err.message);
-    return [];
-  }
+  return query(
+    `SELECT
+      dl.id, dl.quantity, dl.detected_at,
+      p.class_name, p.product_name
+     FROM detection_logs dl
+     JOIN products p ON p.id = dl.product_id
+     ORDER BY dl.detected_at DESC
+     LIMIT $1`,
+    [limit]
+  );
 }
 
 module.exports = {
