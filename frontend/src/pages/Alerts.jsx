@@ -1,63 +1,77 @@
-import React, { useState } from 'react';
-import Loader from '../components/common/Loader';
-import EmptyState from '../components/common/EmptyState';
+import React, { useMemo, useState } from 'react';
 import { usePolling } from '../hooks/usePolling';
 import { getAlerts, ackAlert } from '../api/client';
 import { formatSku, formatDate } from '../utils/format';
 
 export default function Alerts() {
   const [showAll, setShowAll] = useState(false);
-  const { data: alerts, loading, error, refetch } = usePolling(
-    () => getAlerts(!showAll),
+  const { data: allAlerts, loading, error, refetch } = usePolling(
+    () => getAlerts(false),
     5000
   );
-  const [acking, setAcking] = useState(null);
+  const [working, setWorking] = useState(null);
+  const [actionError, setActionError] = useState('');
 
-  const handleAck = async (id) => {
-    setAcking(id);
+  const activeCount = useMemo(
+    () => (allAlerts || []).filter((a) => !a.acked).length,
+    [allAlerts]
+  );
+
+  const rows = useMemo(() => {
+    const list = allAlerts || [];
+    const filtered = showAll ? list : list.filter((a) => !a.acked);
+    return [...filtered].reverse();
+  }, [allAlerts, showAll]);
+
+  const onAck = async (id) => {
+    setWorking(id);
+    setActionError('');
     try {
       await ackAlert(id);
-      refetch();
+      await refetch();
     } catch (err) {
-      alert(err.message);
+      setActionError(err.message || 'Failed to acknowledge alert');
     } finally {
-      setAcking(null);
+      setWorking(null);
     }
   };
 
-  if (loading) return <Loader text="Loading alerts…" />;
-  if (error) return <EmptyState icon="⚠️" title="Backend unreachable" message={error} />;
-
-  const activeCount = (alerts || []).filter((a) => !a.acked).length;
-
   return (
-    <div>
-      <div className="page-header">
-        <h1>Alerts</h1>
-        <p>{activeCount} active low-stock alert{activeCount !== 1 ? 's' : ''}</p>
-      </div>
-
-      <div className="filter-bar">
-        <div className="filter-pills">
+    <main style={{ display: 'block' }}>
+      <div className="page-status-row" style={{ justifyContent: 'space-between' }}>
+        <div>
+          <span className="summary-pill">
+            {activeCount} active alert{activeCount === 1 ? '' : 's'}
+          </span>
+        </div>
+        <div className="toggle-group">
           <button
-            className={`filter-pill${!showAll ? ' active' : ''}`}
+            className={`nav-link${!showAll ? ' active' : ''}`}
             onClick={() => setShowAll(false)}
           >
             Active
           </button>
           <button
-            className={`filter-pill${showAll ? ' active' : ''}`}
+            className={`nav-link${showAll ? ' active' : ''}`}
             onClick={() => setShowAll(true)}
           >
-            All History
+            All
           </button>
         </div>
-        <button className="btn btn-ghost btn-sm" onClick={refetch}>Refresh</button>
       </div>
 
-      <div className="glass-card" style={{ padding: 0, overflow: 'hidden' }}>
-        {!alerts || alerts.length === 0 ? (
-          <EmptyState icon="✅" title="No alerts" message={showAll ? 'No alert history yet.' : 'All stock levels are healthy.'} />
+      <div className="card">
+        <div className="card-title">Low-stock alerts</div>
+
+        {actionError && <p className="note note-error">{actionError}</p>}
+        {error && <p className="note note-error">{error}</p>}
+
+        {loading ? (
+          <div className="chart-empty">Loading alerts…</div>
+        ) : rows.length === 0 ? (
+          <div className="chart-empty">
+            {showAll ? 'No alerts recorded yet.' : 'No active low-stock alerts. All good!'}
+          </div>
         ) : (
           <table className="data-table">
             <thead>
@@ -66,34 +80,34 @@ export default function Alerts() {
                 <th>Count</th>
                 <th>Threshold</th>
                 <th>Needed</th>
-                <th>Created</th>
                 <th>Status</th>
-                <th>Action</th>
+                <th>Created</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
-              {[...alerts].reverse().map((a) => (
+              {rows.map((a) => (
                 <tr key={a.id}>
-                  <td style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{formatSku(a.sku)}</td>
-                  <td className="text-low">{a.count}</td>
+                  <td className="cell-strong">{formatSku(a.sku)}</td>
+                  <td className="cell-low">{a.count}</td>
                   <td>{a.threshold}</td>
                   <td>{a.needed}</td>
-                  <td className="text-muted">{formatDate(a.createdAt)}</td>
                   <td>
                     {a.acked ? (
-                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Acked {formatDate(a.ackedAt)}</span>
+                      <span className="pill pill-ok">Resolved</span>
                     ) : (
-                      <span className="text-low" style={{ fontSize: '0.72rem', fontWeight: 600 }}>ACTIVE</span>
+                      <span className="pill pill-low">Low</span>
                     )}
                   </td>
+                  <td className="cell-muted">{formatDate(a.createdAt)}</td>
                   <td>
                     {!a.acked && (
                       <button
                         className="btn btn-ghost btn-sm"
-                        disabled={acking === a.id}
-                        onClick={() => handleAck(a.id)}
+                        onClick={() => onAck(a.id)}
+                        disabled={working === a.id}
                       >
-                        {acking === a.id ? '…' : 'Acknowledge'}
+                        {working === a.id ? 'Acknowledging…' : 'Acknowledge'}
                       </button>
                     )}
                   </td>
@@ -103,6 +117,6 @@ export default function Alerts() {
           </table>
         )}
       </div>
-    </div>
+    </main>
   );
 }

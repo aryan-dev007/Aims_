@@ -123,6 +123,25 @@ async function getProductInventory(className) {
   return rows[0] || null;
 }
 
+/**
+ * Batch lookup of product identity + current quantity by class_name.
+ * Returns a Map keyed by class_name. Used to enrich low-stock notifications
+ * with the real product ID / display name / current stock from the database.
+ */
+async function getProductsByClassNames(classNames) {
+  if (!Array.isArray(classNames) || classNames.length === 0) return new Map();
+  const rows = await query(
+    `SELECT
+      p.id AS product_id, p.class_id, p.class_name, p.product_name,
+      p.category, i.quantity
+     FROM products p
+     LEFT JOIN inventory i ON i.product_id = p.id
+     WHERE p.class_name = ANY($1::text[])`,
+    [classNames]
+  );
+  return new Map(rows.map((r) => [r.class_name, r]));
+}
+
 async function getDetectionLogs(limit = 100) {
   return query(
     `SELECT
@@ -136,10 +155,66 @@ async function getDetectionLogs(limit = 100) {
   );
 }
 
+/**
+ * Add stock received against an invoice: increments each product's inventory
+ * quantity and writes an audit row to detection_logs. Items whose class_name is
+ * not in the products table are reported as unknown and skipped.
+ */
+async function receiveStock(items) {
+  if (!Array.isArray(items) || items.length === 0) return { changed: [], unknown: [] };
+
+  const client = await pool.connect();
+  const changed = [];
+  const unknown = [];
+
+  try {
+    await client.query("BEGIN");
+
+    for (const { sku, qty } of items) {
+      const quantity = Math.floor(Number(qty));
+      if (!Number.isFinite(quantity) || quantity <= 0) continue;
+
+      const result = await client.query(
+        `WITH updated AS (
+           UPDATE inventory i
+           SET quantity = i.quantity + $1, updated_at = NOW()
+           FROM products p
+           WHERE p.id = i.product_id
+             AND p.class_name = $2
+           RETURNING p.id AS product_id, p.class_name, i.quantity, i.updated_at
+         ),
+         logged AS (
+           INSERT INTO detection_logs (product_id, quantity, detected_at)
+           SELECT product_id, quantity, updated_at
+           FROM updated
+           RETURNING product_id
+         )
+         SELECT updated.class_name
+         FROM updated
+         JOIN logged USING (product_id)`,
+        [quantity, sku]
+      );
+
+      if (result.rows.length) changed.push(sku);
+      else unknown.push(sku);
+    }
+
+    await client.query("COMMIT");
+    return { changed, unknown };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
   loadCache,
   upsertDetection,
   getInventorySnapshot,
   getProductInventory,
+  getProductsByClassNames,
   getDetectionLogs,
+  receiveStock,
 };

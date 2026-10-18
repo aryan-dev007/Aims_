@@ -6,8 +6,32 @@
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# Resolve a Python interpreter that actually has ultralytics installed.
+# Override with:  $env:PYTHON_BIN = "C:\path\to\python.exe"
+$Python = $env:PYTHON_BIN
+if (-not $Python) {
+  $candidates = @(
+    "$env:USERPROFILE\AppData\Local\Python\pythoncore-3.14-64\python.exe",
+    "$env:USERPROFILE\anaconda3\python.exe"
+  )
+  foreach ($c in $candidates) {
+    if (Test-Path $c) {
+      & $c -c "import ultralytics" 2>$null
+      if ($LASTEXITCODE -eq 0) { $Python = $c; break }
+    }
+  }
+}
+if (-not $Python) {
+  Write-Host "[warn] No Python with 'ultralytics' found; falling back to 'python'." -ForegroundColor Yellow
+  Write-Host "       Set `$env:PYTHON_BIN to the right interpreter if the model fails to load." -ForegroundColor Yellow
+  $Python = "python"
+} else {
+  Write-Host "[start] Using Python: $Python" -ForegroundColor Cyan
+}
+$env:PYTHON_BIN = $Python  # backend uses this for its execFile fallback
+
 Write-Host "[start] Predict Server on http://localhost:5555" -ForegroundColor Cyan
-Start-Process -FilePath "python" -ArgumentList "predict_server.py --port 5555" -WorkingDirectory $Root -WindowStyle Minimized
+Start-Process -FilePath $Python -ArgumentList "predict_server.py --port 5555" -WorkingDirectory $Root -WindowStyle Minimized
 
 # Wait for model to load (takes ~5-8s on first run)
 Write-Host "[start] Waiting for YOLO model to load..." -ForegroundColor Yellow

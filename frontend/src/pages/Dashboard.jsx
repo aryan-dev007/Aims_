@@ -37,13 +37,14 @@ export default function Dashboard() {
     const s = displayStock || stock;
     if (!s) return [];
     return [...s]
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10)
       .map((p) => ({
         name: formatSku(p.sku).slice(0, 18),
+        total: p.total || 0,
         count: p.count,
         status: p.status,
-      }));
+      }))
+      .filter((p) => p.total > 0)
+      .sort((a, b) => b.total - a.total);
   }, [displayStock, stock]);
 
   if (stockLoading) return <Loader text="Loading dashboard…" />;
@@ -117,20 +118,20 @@ export default function Dashboard() {
         {/* Chart */}
         <div className="glass-card" style={{ padding: 24 }}>
           <h2 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: 16, color: 'var(--text-primary)' }}>
-            Top 10 Products by Count
+            All Products · Scan Totals
           </h2>
           {chartData.length === 0 ? (
-            <EmptyState icon="📊" title="No stock data" message="Ingest detections to see charts." />
+            <EmptyState icon="📊" title="No scan totals yet" message='Use "Scan & Add to Total" on the Live Monitor.' />
           ) : (
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={chartData} margin={{ top: 4, right: 4, left: -20, bottom: 40 }}>
-                <XAxis dataKey="name" tick={{ fill: '#64748b', fontSize: 10 }} angle={-35} textAnchor="end" interval={0} />
-                <YAxis tick={{ fill: '#64748b', fontSize: 11 }} />
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={chartData} margin={{ top: 4, right: 4, left: -20, bottom: 48 }}>
+                <XAxis dataKey="name" tick={{ fill: '#64748b', fontSize: 9 }} angle={-45} textAnchor="end" interval={0} />
+                <YAxis tick={{ fill: '#64748b', fontSize: 11 }} allowDecimals={false} />
                 <Tooltip
                   contentStyle={{ background: '#0d1117', border: '1px solid rgba(148,163,184,0.2)', borderRadius: 8, fontSize: 12 }}
                   labelStyle={{ color: '#f1f5f9' }}
                 />
-                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                <Bar dataKey="total" radius={[4, 4, 0, 0]}>
                   {chartData.map((entry, i) => (
                     <Cell key={i} fill={entry.status === 'LOW' ? '#ef4444' : '#06d6a0'} />
                   ))}

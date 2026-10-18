@@ -24,6 +24,16 @@ async function request(endpoint, options = {}) {
 export const getStock = () => request('/api/stock');
 export const getStockSku = (sku) => request(`/api/stock/${sku}`);
 
+// ---- Running scan totals ----
+export const getTotals = () => request('/api/stock/totals');
+export const resetTotals = () =>
+  request('/api/stock/totals/reset', { method: 'POST' });
+export const adjustTotal = (sku, delta) =>
+  request('/api/stock/totals/adjust', {
+    method: 'POST',
+    body: JSON.stringify({ sku, delta }),
+  });
+
 // ---- Alerts ----
 export const getAlerts = (activeOnly = true) =>
   request(`/api/alerts${activeOnly ? '' : '?active=false'}`);
@@ -46,6 +56,12 @@ export const approveOrder = (id, approvedBy = 'dashboard-user') =>
 export const cancelOrder = (id) =>
   request(`/api/orders/${id}/cancel`, { method: 'POST' });
 
+// ---- Invoices (goods received → add stock) ----
+export const getInvoices = () => request('/api/invoices');
+export const getInvoice = (id) => request(`/api/invoices/${id}`);
+export const createInvoice = (body = {}) =>
+  request('/api/invoices', { method: 'POST', body: JSON.stringify(body) });
+
 // ---- Snapshots ----
 export const getSnapshots = (limit = 100) =>
   request(`/api/snapshots?limit=${limit}`);
@@ -58,10 +74,11 @@ export const getEvents = (limit = 50) =>
 export const getHealth = () => request('/api/health');
 
 // ---- Predict Image / Camera Snapshot ----
-export const predictImage = (image, conf = 0.45) =>
+// accumulate=true adds the detected counts to the running scan total.
+export const predictImage = (image, conf = 0.45, accumulate = false) =>
   request('/api/predict', {
     method: 'POST',
-    body: JSON.stringify({ image, conf }),
+    body: JSON.stringify({ image, conf, accumulate }),
   });
 
 // ---- PostgreSQL Inventory ----

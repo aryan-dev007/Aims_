@@ -9,7 +9,7 @@ class JsonStore {
   }
 
   _load() {
-    const defaults = { products: {}, alerts: [], snapshots: [], events: [], orders: [] };
+    const defaults = { products: {}, alerts: [], snapshots: [], events: [], orders: [], totals: {}, invoices: [] };
     try {
       return { ...defaults, ...JSON.parse(fs.readFileSync(this.file, "utf8")) };
     } catch {
@@ -29,6 +29,56 @@ class JsonStore {
 
   upsertProduct(sku, patch) {
     this.data.products[sku] = { ...this.data.products[sku], ...patch };
+    this.save();
+    return this.data.products[sku];
+  }
+
+  // ---- running totals (only ever increase until explicitly reset) ----
+  getTotals() {
+    if (!this.data.totals) this.data.totals = {};
+    return this.data.totals;
+  }
+
+  addTotals(perProduct) {
+    const totals = this.getTotals();
+    for (const [sku, qty] of Object.entries(perProduct || {})) {
+      const n = Math.floor(Number(qty));
+      if (!Number.isFinite(n) || n <= 0) continue;
+      totals[sku] = (totals[sku] || 0) + n;
+    }
+    this.save();
+    return totals;
+  }
+
+  resetTotals() {
+    this.data.totals = {};
+    this.save();
+    return this.data.totals;
+  }
+
+  adjustTotal(sku, delta) {
+    const totals = this.getTotals();
+    const next = Math.max(0, (totals[sku] || 0) + Math.floor(Number(delta) || 0));
+    if (next === 0) delete totals[sku];
+    else totals[sku] = next;
+    this.save();
+    return totals[sku] || 0;
+  }
+
+  // ---- live stock (goods received via invoices) ----
+  // Increases a product's on-hand count. Unknown SKUs are created on the fly
+  // using the configured threshold (or 0). Returns the updated product.
+  incrementCount(sku, qty) {
+    const delta = Math.floor(Number(qty));
+    if (!Number.isFinite(delta) || delta <= 0) return this.data.products[sku] || null;
+    const patch = this.data.products[sku] || {};
+    const threshold = patch.threshold ?? config.thresholds[sku] ?? 0;
+    this.data.products[sku] = {
+      ...patch,
+      count: (patch.count || 0) + delta,
+      threshold,
+      updatedAt: new Date().toISOString(),
+    };
     this.save();
     return this.data.products[sku];
   }
@@ -105,6 +155,23 @@ class JsonStore {
     Object.assign(order, patch);
     this.save();
     return order;
+  }
+
+  // ---- invoices (goods received / stock-in) ----
+  getInvoices() {
+    if (!this.data.invoices) this.data.invoices = [];
+    return this.data.invoices;
+  }
+
+  addInvoice(invoice) {
+    if (!this.data.invoices) this.data.invoices = [];
+    this.data.invoices.push(invoice);
+    this.save();
+    return invoice;
+  }
+
+  getInvoice(id) {
+    return this.getInvoices().find((i) => i.id === id) || null;
   }
 }
 

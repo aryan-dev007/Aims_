@@ -1,12 +1,15 @@
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
+} from 'recharts';
 import { useSocket } from '../hooks/useSocket';
 import KpiCard from '../components/common/KpiCard';
 import EmptyState from '../components/common/EmptyState';
 import { formatSku } from '../utils/format';
-import { predictImage } from '../api/client';
+import { predictImage, resetTotals } from '../api/client';
 
 export default function LiveMonitor() {
-  const { connected, latestFrame, detectorOnline, detectionLog } = useSocket();
+  const { connected, latestFrame, detectorOnline, detectionLog, latestStock } = useSocket();
 
   // Camera modes: 'webcam' | 'server' | 'file'
   const [sourceMode, setSourceMode] = useState('webcam');
@@ -142,8 +145,9 @@ export default function LiveMonitor() {
     setIsWebcamActive(false);
   };
 
-  // Capture current video frame and run detection (returns the result)
-  const captureAndDetect = useCallback(async () => {
+  // Capture current video frame and run detection (returns the result).
+  // accumulate=true adds the detected counts to the running scan total.
+  const captureAndDetect = useCallback(async (accumulate = false) => {
     if (!videoRef.current || !canvasRef.current) return null;
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -169,7 +173,7 @@ export default function LiveMonitor() {
     setScanError(null);
     const t0 = performance.now();
     try {
-      const res = await predictImage(b64Image, 0.45);
+      const res = await predictImage(b64Image, 0.45, accumulate);
       const elapsed = Math.round(performance.now() - t0);
       setInferenceMs(elapsed);
       if (res.ok) {
@@ -282,6 +286,27 @@ export default function LiveMonitor() {
       setIsScanning(false);
     }
   };
+
+  // Reset the cumulative running totals (both locally and on the backend)
+  const handleResetTotals = async () => {
+    setScanError(null);
+    try {
+      await resetTotals();
+    } catch (err) {
+      setScanError(err.message || 'Failed to reset totals.');
+    }
+  };
+
+  // Running scan totals per product (only ever increase). Source of truth is the
+  // backend via the stock:update socket event, so the chart grows live on scan.
+  const totalsData = useMemo(() => {
+    const products = latestStock?.products;
+    if (!products) return [];
+    return products
+      .filter((p) => (p.total || 0) > 0)
+      .map((p) => ({ name: formatSku(p.sku).slice(0, 16), total: p.total || 0 }))
+      .sort((a, b) => b.total - a.total);
+  }, [latestStock]);
 
   // Active Frame Data calculation
   const activeData = useMemo(() => {
@@ -439,7 +464,7 @@ export default function LiveMonitor() {
                         <button className="btn btn-primary" onClick={toggleContinuousScan}>
                           ⚡ Start Continuous Scan
                         </button>
-                        <button className="btn btn-ghost" onClick={captureAndDetect} disabled={isScanning}>
+                        <button className="btn btn-ghost" onClick={() => captureAndDetect()} disabled={isScanning}>
                           {isScanning ? '🔍 Scanning…' : '📸 Single Scan'}
                         </button>
                       </>
@@ -448,6 +473,12 @@ export default function LiveMonitor() {
                         ⏸️ Pause Scanning
                       </button>
                     )}
+                    <button className="btn btn-primary" onClick={() => captureAndDetect(true)} disabled={isScanning}>
+                      {isScanning ? '🔍 Scanning…' : '➕ Scan & Add to Total'}
+                    </button>
+                    <button className="btn btn-ghost" onClick={handleResetTotals} disabled={isScanning}>
+                      🔄 Reset Total
+                    </button>
                     <button className="btn btn-ghost" onClick={stopWebcam}>
                       ⏹️ Stop
                     </button>
@@ -677,6 +708,37 @@ export default function LiveMonitor() {
                     : 'Turn on camera or upload an image to count products.'
                 }
               />
+            )}
+          </div>
+
+          {/* Running Scan Totals (all products) */}
+          <div className="glass-card" style={{ padding: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <h3 className="live-sidebar-title" style={{ marginBottom: 0 }}>Scan Totals · All Products</h3>
+              {totalsData.length > 0 && (
+                <span className="btn btn-sm" style={{ background: 'var(--color-ok-bg)', color: 'var(--color-ok)', fontSize: '0.72rem' }}>
+                  Σ {totalsData.reduce((s, p) => s + p.total, 0)}
+                </span>
+              )}
+            </div>
+            {totalsData.length === 0 ? (
+              <EmptyState
+                icon="📊"
+                title="No totals yet"
+                message='Point the camera at a product and press "Scan & Add to Total".'
+              />
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={totalsData} margin={{ top: 4, right: 4, left: -24, bottom: 48 }}>
+                  <XAxis dataKey="name" tick={{ fill: '#64748b', fontSize: 9 }} angle={-45} textAnchor="end" interval={0} />
+                  <YAxis tick={{ fill: '#64748b', fontSize: 10 }} allowDecimals={false} />
+                  <Tooltip
+                    contentStyle={{ background: '#0d1117', border: '1px solid rgba(148,163,184,0.2)', borderRadius: 8, fontSize: 12 }}
+                    labelStyle={{ color: '#f1f5f9' }}
+                  />
+                  <Bar dataKey="total" fill="#06d6a0" radius={[4, 4, 0, 0]} name="Total" />
+                </BarChart>
+              </ResponsiveContainer>
             )}
           </div>
 

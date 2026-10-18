@@ -1,12 +1,148 @@
 {
-  "name": "Low Stock Replenishment & Approval",
+  "name": "AIMS Low-Stock Email Alerts",
   "nodes": [
+    {
+      "id": "webhook-lowstock",
+      "name": "Webhook (low stock)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-240, -40],
+      "webhookId": "low-stock-alert",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "low-stock-alert",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "validate",
+      "name": "Valid + authorized?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-20, -40],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-token",
+              "leftValue": "={{ $json.headers['x-aims-token'] }}",
+              "rightValue": "={{ $env.N8N_WEBHOOK_TOKEN }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c-items",
+              "leftValue": "={{ ($json.body.items || []).length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            },
+            {
+              "id": "c-event",
+              "leftValue": "={{ $json.body.event }}",
+              "rightValue": "low_stock",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "prepare-email",
+      "name": "Prepare email",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, -140],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a-to",
+              "name": "toEmail",
+              "value": "={{ $json.body.ownerEmail || $env.INVENTORY_OWNER_EMAIL || $env.ADMIN_EMAIL }}",
+              "type": "string"
+            },
+            {
+              "id": "a-subject",
+              "name": "subject",
+              "value": "={{ $json.body.subject }}",
+              "type": "string"
+            },
+            {
+              "id": "a-message",
+              "name": "message",
+              "value": "={{ $json.body.message }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "email-admin",
+      "name": "Email owner (low stock)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [480, -140],
+      "parameters": {
+        "fromEmail": "={{ $env.ALERT_FROM_EMAIL || $env.INVENTORY_OWNER_EMAIL || $env.ADMIN_EMAIL || $json.toEmail }}",
+        "toEmail": "={{ $json.toEmail }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.message }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "respond-ok",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [720, -140],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, accepted: true, itemCount: $json.itemCount || null }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "respond-unauth",
+      "name": "Respond 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [220, 80],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: 'unauthorized or invalid payload' }) }}",
+        "options": {
+          "responseCode": 401
+        }
+      }
+    },
     {
       "id": "schedule",
       "name": "Every 5 minutes",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [0, 0],
+      "position": [-240, 320],
       "parameters": {
         "rule": {
           "interval": [
@@ -23,7 +159,7 @@
       "name": "Fetch reorder recommendations",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [180, 0],
+      "position": [-20, 320],
       "parameters": {
         "method": "GET",
         "url": "={{$env.BACKEND_URL}}/api/reorder",
@@ -38,12 +174,18 @@
       "name": "Needs replenishment?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [380, 0],
+      "position": [200, 320],
       "parameters": {
         "conditions": {
-          "options": {},
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
           "conditions": [
             {
+              "id": "c-reorder",
               "leftValue": "={{ $json.itemCount }}",
               "rightValue": 0,
               "operator": {
@@ -53,10 +195,7 @@
             }
           ]
         },
-        "options": {
-          "caseSensitive": true,
-          "typeValidation": "loose"
-        }
+        "options": {}
       }
     },
     {
@@ -64,7 +203,7 @@
       "name": "Create procurement order",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [580, -120],
+      "position": [440, 240],
       "parameters": {
         "method": "POST",
         "url": "={{$env.BACKEND_URL}}/api/orders",
@@ -78,40 +217,65 @@
       }
     },
     {
-      "id": "build-approval",
-      "name": "Build procurement approval",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
-      "position": [580, 120],
-      "parameters": {
-        "assignments": {
-          "assignments": [
-            {
-              "id": "a1",
-              "name": "subject",
-              "value": "={{ 'Procurement approval needed: ' + $json.itemCount + ' products low on stock' }}",
-              "type": "string"
-            },
-            {
-              "id": "a2",
-              "name": "message",
-              "value": "={{ JSON.stringify($json.items) }}",
-              "type": "string"
-            }
-          ]
-        },
-        "options": {}
-      }
-    },
-    {
       "id": "noop-when-ok",
       "name": "Stock is fine",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
-      "position": [580, 300]
+      "position": [440, 420]
     }
   ],
   "connections": {
+    "webhook-lowstock": {
+      "main": [
+        [
+          {
+            "node": "validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "validate": {
+      "main": [
+        [
+          {
+            "node": "prepare-email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "respond-unauth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare-email": {
+      "main": [
+        [
+          {
+            "node": "email-admin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "email-admin": {
+      "main": [
+        [
+          {
+            "node": "respond-ok",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "schedule": {
       "main": [
         [
@@ -139,11 +303,6 @@
         [
           {
             "node": "create-order",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "build-approval",
             "type": "main",
             "index": 0
           }

@@ -1,6 +1,7 @@
 const express = require("express");
 const store = require("./store");
 const svc = require("./stockService");
+const config = require("./config");
 
 const router = express.Router();
 
@@ -80,6 +81,55 @@ router.get("/stock", (req, res) => {
   res.json(svc.productStatusList());
 });
 
+// Running scan totals (cumulative, only go up until reset)
+router.get("/stock/totals", (req, res) => {
+  res.json(svc.totalsList());
+});
+
+// Reset all running scan totals
+router.post("/stock/totals/reset", (req, res) => {
+  const totals = svc.resetTotals();
+
+  const io = req.app.get("io");
+  if (io) {
+    io.emit("stock:update", {
+      timestamp: new Date().toISOString(),
+      per_product: {},
+      total_units: 0,
+      low_stock: {},
+      alerts: store.getAlerts(true).length,
+      products: svc.productStatusList(),
+    });
+  }
+
+  res.json({ ok: true, totals });
+});
+
+// Manually adjust a product's running total. Body: { sku, delta } (delta +1/-1)
+router.post("/stock/totals/adjust", (req, res) => {
+  const { sku, delta } = req.body || {};
+  let total;
+  try {
+    total = svc.adjustTotal(sku, delta);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  const io = req.app.get("io");
+  if (io) {
+    io.emit("stock:update", {
+      timestamp: new Date().toISOString(),
+      per_product: {},
+      total_units: 0,
+      low_stock: {},
+      alerts: store.getAlerts(true).length,
+      products: svc.productStatusList(),
+    });
+  }
+
+  res.json({ ok: true, sku, total });
+});
+
 // Single product
 router.get("/stock/:sku", (req, res) => {
   const product = store.getProducts()[req.params.sku];
@@ -120,7 +170,22 @@ router.get("/reorder", (req, res) => {
 
 // n8n webhook target: receives automation events (e.g. order placed) and logs
 // them to the event log (kept separate from the stock history timeline).
+// Protected by an optional shared token (config.inboundWebhookToken):
+//   header  X-AIMS-Token: <token>   or   ?token=<token>
 router.post("/webhook/n8n", (req, res) => {
+  const expected = config.inboundWebhookToken;
+  if (expected) {
+    const provided =
+      req.get("x-aims-token") || req.query.token || "";
+    if (provided !== expected) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+  }
+
+  if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+    return res.status(400).json({ error: "Expected a JSON object body" });
+  }
+
   const event = { ...req.body, receivedAt: new Date().toISOString() };
   store.pushEvent({ ...event, note: "n8n-webhook" });
   res.json({ ok: true, event });
@@ -210,7 +275,8 @@ function proxyToServer(image, conf) {
 function fallbackExecFile(image, conf) {
   return new Promise((resolve, reject) => {
     const scriptPath = path.resolve(__dirname, "../../predict_frame.py");
-    const pyProcess = execFile("python", [scriptPath, "--conf", String(conf)], {
+    const pyBin = process.env.PYTHON_BIN || "python";
+    const pyProcess = execFile(pyBin, [scriptPath, "--conf", String(conf)], {
       maxBuffer: 15 * 1024 * 1024,
       cwd: path.resolve(__dirname, "../.."),
     }, (err, stdout, stderr) => {
@@ -224,7 +290,7 @@ function fallbackExecFile(image, conf) {
 }
 
 router.post("/predict", async (req, res) => {
-  const { image, conf = 0.45 } = req.body || {};
+  const { image, conf = 0.45, accumulate = false } = req.body || {};
   if (!image) {
     return res.status(400).json({ error: "Image data (base64 or path) required" });
   }
@@ -241,10 +307,19 @@ router.post("/predict", async (req, res) => {
 
     // Ingest detections + broadcast via Socket.IO
     if (result.ok && result.per_product) {
-      const postgres = await persistDetections(req, result.per_product);
-      req.app.get("detectorPing")();
-      const ingestResult = svc.ingest(result);
+      let ingestResult;
+      if (accumulate) {
+        // Running-total mode: bump live counts AND add to the cumulative total.
+        // Does not require PostgreSQL so it works even if PG is offline.
+        ingestResult = svc.ingest(result);
+        result.total = svc.accumulate(result.per_product);
+      } else {
+        const postgres = await persistDetections(req, result.per_product);
+        ingestResult = svc.ingest(result);
+        result.postgres = { changed: postgres.changed, unknown: postgres.unknown };
+      }
 
+      req.app.get("detectorPing")();
       const io = req.app.get("io");
       if (io) {
         io.emit("stock:update", {
@@ -268,7 +343,6 @@ router.post("/predict", async (req, res) => {
           });
         }
       }
-      result.postgres = { changed: postgres.changed, unknown: postgres.unknown };
     }
     res.json(result);
   } catch (err) {
@@ -337,6 +411,64 @@ router.post("/orders/:id/cancel", (req, res) => {
   });
   if (!order) return res.status(404).json({ error: "Order not found" });
   res.json(order);
+});
+
+// ======================================================================
+// Invoices — goods received that add stock
+// ======================================================================
+
+// Create a received invoice and add its quantities to stock.
+// Body: { invoiceNumber?, supplier?, invoiceDate?, receivedBy?, items: [{ sku, qty, unitPrice? }] }
+router.post("/invoices", async (req, res) => {
+  let result;
+  try {
+    result = svc.createInvoice(req.body || {});
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  const { invoice, applied } = result;
+
+  // Mirror the stock-in to PostgreSQL (best-effort — never blocks the response).
+  let postgres = null;
+  const pgInv = req.app.get("pgInventory");
+  if (pgInv) {
+    try {
+      postgres = await pgInv.receiveStock(
+        invoice.items.map((i) => ({ sku: i.sku, qty: i.qty }))
+      );
+    } catch (err) {
+      postgres = { error: err.message };
+      console.warn("[PG] Invoice stock-in failed:", err.message);
+    }
+  }
+
+  const io = req.app.get("io");
+  if (io) {
+    io.emit("stock:update", {
+      timestamp: new Date().toISOString(),
+      per_product: applied,
+      total_units: invoice.totalUnits,
+      low_stock: {},
+      alerts: store.getAlerts(true).length,
+      products: svc.productStatusList(),
+    });
+    io.emit("invoice:created", invoice);
+  }
+
+  res.status(201).json({ invoice, applied, postgres });
+});
+
+// List invoices (most recent first)
+router.get("/invoices", (req, res) => {
+  res.json(svc.listInvoices());
+});
+
+// Single invoice
+router.get("/invoices/:id", (req, res) => {
+  const invoice = svc.getInvoice(req.params.id);
+  if (!invoice) return res.status(404).json({ error: "Invoice not found" });
+  res.json(invoice);
 });
 
 // ======================================================================
