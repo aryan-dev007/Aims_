@@ -1,0 +1,16 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 libgl1 libglib2.0-0 \
+    && apt-get clean
+
+COPY invoice_ocr_requirements.txt ./
+RUN pip install --no-cache-dir -r invoice_ocr_requirements.txt
+
+COPY invoice_ocr_server.py ./
+
+EXPOSE 5556
+
+CMD ["python", "invoice_ocr_server.py"]

@@ -1,10 +1,29 @@
 import React, { useMemo, useState } from 'react';
 import { usePolling } from '../hooks/usePolling';
-import { getStock, getInvoices, createInvoice } from '../api/client';
+import { getStock, getInvoices, createInvoice, parseInvoiceDocument } from '../api/client';
 import { formatSku, formatDate } from '../utils/format';
+import { useOwnerAuth } from '../components/OwnerAuthProvider';
 
 let lineSeq = 0;
-const emptyLine = () => ({ id: ++lineSeq, sku: '', qty: 1, unitPrice: '' });
+const emptyLine = () => ({ id: ++lineSeq, sku: '', qty: 1, unitPrice: '', description: '' });
+const MAX_FILE_SIZE = 8 * 1024 * 1024;
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read the selected file.'));
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const separator = result.indexOf(',');
+      if (separator < 0) {
+        reject(new Error('Could not read the selected file.'));
+        return;
+      }
+      resolve(result.slice(separator + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function Invoices() {
   const { data: stock } = usePolling(getStock, 8000);
@@ -16,7 +35,12 @@ export default function Invoices() {
   const [lines, setLines] = useState([emptyLine()]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [syncWarning, setSyncWarning] = useState('');
   const [formError, setFormError] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadedFile, setUploadedFile] = useState('');
+  const [documentHash, setDocumentHash] = useState('');
+  const { runOwnerAction } = useOwnerAuth();
 
   const products = useMemo(() => {
     const list = stock || [];
@@ -42,15 +66,85 @@ export default function Invoices() {
     setInvoiceNumber('');
     setInvoiceDate(new Date().toISOString().slice(0, 10));
     setLines([emptyLine()]);
+    setUploadedFile('');
+    setDocumentHash('');
+  };
+
+  const onUpload = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setFormError('');
+    setMessage('');
+    setSyncWarning('');
+    setUploadedFile('');
+    setDocumentHash('');
+    setLines([emptyLine()]);
+    setSupplier('');
+    setInvoiceNumber('');
+    setInvoiceDate('');
+    if (file.size > MAX_FILE_SIZE) {
+      setFormError('Invoice files must be no larger than 8 MB.');
+      return;
+    }
+
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    const detectedMimeType = file.type || ({
+      pdf: 'application/pdf',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+    }[extension] || '');
+    const mimeType = detectedMimeType === 'image/jpg' ? 'image/jpeg' : detectedMimeType;
+    if (!['application/pdf', 'image/png', 'image/jpeg'].includes(mimeType)) {
+      setFormError('Choose a PDF, PNG, JPG, or JPEG invoice.');
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const document = await readFileAsBase64(file);
+      await runOwnerAction(async () => {
+        const parsed = await parseInvoiceDocument({ document, mimeType });
+        if (!Array.isArray(parsed.items) || parsed.items.length === 0) {
+          throw new Error('No invoice line items were identified. Enter the items manually.');
+        }
+        setInvoiceNumber(parsed.invoiceNumber || '');
+        setInvoiceDate(parsed.invoiceDate || '');
+        setSupplier(parsed.supplier || '');
+        setLines(parsed.items.map((item) => ({
+          id: ++lineSeq,
+          sku: item.sku || '',
+          qty: item.qty ?? '',
+          unitPrice: item.unitPrice ?? '',
+          description: item.description || '',
+          confidence: item.confidence,
+          matchScore: item.matchScore,
+        })));
+        setUploadedFile(file.name);
+        setDocumentHash(parsed.documentHash || '');
+        setMessage('Invoice extracted. Review every item and product match before adding stock.');
+      });
+    } catch (err) {
+      setFormError(err.message || 'Could not process this invoice.');
+    } finally {
+      setUploading(false);
+    }
   };
 
   const onSubmit = async (e) => {
     e.preventDefault();
     setFormError('');
     setMessage('');
+    setSyncWarning('');
 
     if (validLines.length === 0) {
       setFormError('Add at least one product with a quantity greater than 0.');
+      return;
+    }
+    if (documentHash && validLines.length !== lines.length) {
+      setFormError('Match every extracted item to a product and enter a positive quantity before confirming.');
       return;
     }
 
@@ -60,18 +154,26 @@ export default function Invoices() {
         supplier,
         invoiceNumber,
         invoiceDate,
+        documentHash: documentHash || undefined,
         items: validLines.map((l) => ({
           sku: l.sku,
-          name: formatSku(l.sku),
+          name: l.description || formatSku(l.sku),
           qty: Number(l.qty),
           unitPrice: Number(l.unitPrice) || 0,
         })),
       };
-      const res = await createInvoice(body);
-      const appliedUnits = res?.invoice?.totalUnits ?? totalUnits;
-      setMessage(`Invoice saved — ${appliedUnits} unit(s) added to stock.`);
-      resetForm();
-      await refetch();
+      await runOwnerAction(async () => {
+        const res = await createInvoice(body);
+        const appliedUnits = res?.invoice?.totalUnits ?? totalUnits;
+        setMessage(`Invoice saved — ${appliedUnits} unit(s) added to stock.`);
+        if (res?.postgres?.error) {
+          setSyncWarning('PostgreSQL inventory sync failed; verify the database before relying on its reports.');
+        } else if (res?.postgres?.unknown?.length) {
+          setSyncWarning(`PostgreSQL did not recognize ${res.postgres.unknown.length} product(s); check the product records.`);
+        }
+        resetForm();
+        await refetch();
+      });
     } catch (err) {
       setFormError(err.message || 'Failed to save invoice');
     } finally {
@@ -92,7 +194,26 @@ export default function Invoices() {
         </div>
 
         {formError && <p className="note note-error">{formError}</p>}
-        {!formError && message && <p className="note note-ok">{message}</p>}
+        {!formError && message && <p className={syncWarning ? 'note note-error' : 'note note-ok'}>{message}{syncWarning && ` ${syncWarning}`}</p>}
+
+        <div className="invoice-upload">
+          <div>
+            <strong>Upload invoice for automatic extraction</strong>
+            <p className="muted small">
+              PDF, PNG, or JPG up to 8 MB. OCR suggestions must be reviewed before stock changes.
+            </p>
+          </div>
+          <label className="btn btn-secondary invoice-upload-button">
+            {uploading ? 'Reading invoice…' : uploadedFile ? 'Choose another file' : 'Choose invoice file'}
+            <input
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
+              onChange={onUpload}
+              disabled={uploading || busy}
+            />
+          </label>
+          {uploadedFile && <span className="muted small">{uploadedFile}</span>}
+        </div>
 
         <form onSubmit={onSubmit}>
           <div className="form-grid">
@@ -143,18 +264,28 @@ export default function Invoices() {
               const lineTotal = Number(line.qty) * (Number(line.unitPrice) || 0);
               return (
                 <div className="line-item" key={line.id}>
-                  <select
-                    className="input"
-                    value={line.sku}
-                    onChange={(e) => updateLine(line.id, { sku: e.target.value })}
-                  >
-                    <option value="">Select product…</option>
-                    {products.map((p) => (
-                      <option key={p.sku} value={p.sku}>
-                        {formatSku(p.sku)}
-                      </option>
-                    ))}
-                  </select>
+                    <div className="invoice-product-cell">
+                      {line.description && (
+                        <span className="invoice-ocr-description" title={line.description}>
+                          OCR: {line.description}
+                          {line.suggestedSku && ` · suggestion: ${formatSku(line.suggestedSku)}`}
+                          {Number.isFinite(line.matchScore) && ` · match ${Math.round(line.matchScore * 100)}%`}
+                          {Number.isFinite(line.confidence) && ` · OCR ${Math.round(line.confidence * 100)}%`}
+                        </span>
+                      )}
+                      <select
+                        className="input"
+                        value={line.sku}
+                        onChange={(e) => updateLine(line.id, { sku: e.target.value })}
+                      >
+                        <option value="">Select product…</option>
+                        {products.map((p) => (
+                          <option key={p.sku} value={p.sku}>
+                            {formatSku(p.sku)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   <input
                     className="input qty"
                     type="number"
@@ -196,10 +327,10 @@ export default function Invoices() {
           </div>
 
           <div className="controls">
-            <button className="btn btn-primary" type="submit" disabled={busy}>
-              {busy ? 'Saving…' : 'Save & add to stock'}
+            <button className="btn btn-primary" type="submit" disabled={busy || uploading}>
+              {busy ? 'Saving…' : documentHash ? 'Confirm invoice & update stock' : 'Save & add to stock'}
             </button>
-            <button type="button" className="btn btn-ghost" onClick={resetForm} disabled={busy}>
+            <button type="button" className="btn btn-ghost" onClick={resetForm} disabled={busy || uploading}>
               Clear
             </button>
           </div>

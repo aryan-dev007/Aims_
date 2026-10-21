@@ -175,47 +175,53 @@ function totalsList() {
 }
 
 /**
- * Re-evaluate the low-stock alerts for a single SKU after its stock changed
- * (e.g. goods received via an invoice). Closes alerts when the SKU has
- * recovered above its threshold, otherwise keeps them current.
- */
-function reconcileAlerts(sku) {
-  const product = store.getProducts()[sku];
-  if (!product) return;
-  const openAlerts = store.getAlerts(true).filter((a) => a.sku === sku);
-  if (openAlerts.length === 0) return;
-
-  const count = product.count ?? 0;
-  const threshold = product.threshold ?? thresholdFor(sku);
-
-  if (count >= threshold) {
-    for (const alert of openAlerts) store.ackAlert(alert.id);
-  } else {
-    for (const alert of openAlerts) {
-      store.updateAlert(alert.id, { count, needed: threshold - count });
-    }
-  }
-}
-
-/**
  * Record a received invoice (goods received) and add its quantities to stock.
  * Each line item bumps the product's on-hand count and the cumulative total,
  * then any low-stock alerts for that SKU are re-evaluated.
  *
  * Body: { invoiceNumber?, supplier?, invoiceDate?, receivedBy?, items: [{sku, qty, unitPrice?}] }
  */
-function createInvoice({ invoiceNumber, supplier, invoiceDate, receivedBy, items } = {}) {
+function createInvoice({ invoiceNumber, supplier, invoiceDate, receivedBy, documentHash, items } = {}) {
   if (!Array.isArray(items) || items.length === 0) {
     throw new Error("items must be a non-empty array");
   }
 
+  const normalizedInvoiceNumber =
+    typeof invoiceNumber === "string" ? invoiceNumber.trim() : "";
+  const normalizedDocumentHash =
+    typeof documentHash === "string" && /^[a-f0-9]{64}$/i.test(documentHash)
+      ? documentHash.toLowerCase()
+      : null;
+  if (documentHash && !normalizedDocumentHash) {
+    throw new Error("documentHash must be a valid SHA-256 hash");
+  }
+
+  const duplicate = store.getInvoices().find((existing) =>
+    (normalizedDocumentHash && existing.documentHash === normalizedDocumentHash) ||
+    (normalizedInvoiceNumber &&
+      typeof existing.invoiceNumber === "string" &&
+      existing.invoiceNumber.toLowerCase() === normalizedInvoiceNumber.toLowerCase())
+  );
+  if (duplicate) {
+    const error = new Error("This invoice has already been recorded.");
+    error.code = "DUPLICATE_INVOICE";
+    throw error;
+  }
+
   const clean = [];
   for (const item of items) {
-    if (!item || typeof item.sku !== "string" || !item.sku.trim()) continue;
-    const qty = Math.floor(Number(item.qty));
-    if (!Number.isFinite(qty) || qty <= 0) continue;
-    const price = Number(item.unitPrice);
-    const unitPrice = Number.isFinite(price) && price >= 0 ? price : 0;
+    if (!item || typeof item.sku !== "string" || !item.sku.trim()) {
+      throw new Error("Every invoice item must have a matched product");
+    }
+    const qty = Number(item.qty);
+    if (!Number.isSafeInteger(qty) || qty <= 0) {
+      throw new Error(`Quantity for ${item.sku} must be a positive integer`);
+    }
+    const price = item.unitPrice === "" || item.unitPrice == null ? 0 : Number(item.unitPrice);
+    if (!Number.isFinite(price) || price < 0) {
+      throw new Error(`Unit price for ${item.sku} must be a non-negative number`);
+    }
+    const unitPrice = price;
     clean.push({
       sku: item.sku.trim(),
       name: item.name || null,
@@ -228,20 +234,12 @@ function createInvoice({ invoiceNumber, supplier, invoiceDate, receivedBy, items
 
   const now = new Date().toISOString();
 
-  // Apply stock: on-hand count + cumulative total. Reconcile alerts per SKU.
-  const applied = {};
-  for (const item of clean) {
-    store.incrementCount(item.sku, item.qty);
-    applied[item.sku] = (applied[item.sku] || 0) + item.qty;
-  }
-  store.addTotals(applied);
-  for (const sku of Object.keys(applied)) reconcileAlerts(sku);
-
   const invoice = {
     id: crypto.randomUUID(),
-    invoiceNumber: (invoiceNumber || "").trim() || null,
+    invoiceNumber: normalizedInvoiceNumber || null,
+    documentHash: normalizedDocumentHash,
     supplier: (supplier || "").trim() || null,
-    invoiceDate: invoiceDate || now,
+    invoiceDate: typeof invoiceDate === "string" && invoiceDate ? invoiceDate : null,
     items: clean,
     totalUnits: clean.reduce((s, i) => s + i.qty, 0),
     totalAmount: Number(clean.reduce((s, i) => s + i.lineTotal, 0).toFixed(2)),
@@ -250,7 +248,7 @@ function createInvoice({ invoiceNumber, supplier, invoiceDate, receivedBy, items
     createdAt: now,
   };
 
-  store.addInvoice(invoice);
+  const applied = store.commitInvoice(invoice, config.thresholds);
   return { invoice, applied };
 }
 

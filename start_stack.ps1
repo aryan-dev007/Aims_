@@ -30,6 +30,29 @@ if (-not $Python) {
 }
 $env:PYTHON_BIN = $Python  # backend uses this for its execFile fallback
 
+$OcrPython = $env:INVOICE_OCR_PYTHON
+if (-not $OcrPython) {
+  $ocrCandidates = @(
+    "$env:USERPROFILE\anaconda3\envs\aims-invoice-ocr\python.exe",
+    "$env:USERPROFILE\AppData\Local\Python\pythoncore-3.11-64\python.exe",
+    "$env:USERPROFILE\AppData\Local\Python\pythoncore-3.12-64\python.exe",
+    "$env:USERPROFILE\AppData\Local\Programs\Python\Python311\python.exe",
+    "$env:USERPROFILE\AppData\Local\Programs\Python\Python312\python.exe"
+  )
+  foreach ($candidate in $ocrCandidates) {
+    if (Test-Path $candidate) {
+      & $candidate -c "import paddleocr, pypdfium2" 2>$null
+      if ($LASTEXITCODE -eq 0) { $OcrPython = $candidate; break }
+    }
+  }
+}
+if ($OcrPython) {
+  Write-Host "[start] Invoice OCR service on http://localhost:5556" -ForegroundColor Cyan
+  Start-Process -FilePath $OcrPython -ArgumentList "invoice_ocr_server.py" -WorkingDirectory $Root -WindowStyle Minimized
+} else {
+  Write-Host "[warn] Invoice OCR is not installed. See invoice_ocr_requirements.txt for setup." -ForegroundColor Yellow
+}
+
 Write-Host "[start] Predict Server on http://localhost:5555" -ForegroundColor Cyan
 Start-Process -FilePath $Python -ArgumentList "predict_server.py --port 5555" -WorkingDirectory $Root -WindowStyle Minimized
 

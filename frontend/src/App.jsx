@@ -6,6 +6,7 @@ import Alerts from './pages/Alerts';
 import Invoices from './pages/Invoices';
 import { usePolling } from './hooks/usePolling';
 import { getAlerts } from './api/client';
+import { OwnerAuthProvider } from './components/OwnerAuthProvider';
 
 function BrandMark() {
   return (
@@ -36,8 +37,9 @@ export default function App() {
   const alertCount = (activeAlerts || []).length;
 
   return (
-    <BrowserRouter>
-      <div className="app">
+    <OwnerAuthProvider>
+      <BrowserRouter>
+        <div className="app">
         <header className="app-header">
           <div className="brand">
             <BrandMark />
@@ -70,7 +72,8 @@ export default function App() {
           <Route path="/invoices" element={<Invoices />} />
           <Route path="/alerts" element={<Alerts />} />
         </Routes>
-      </div>
-    </BrowserRouter>
+        </div>
+      </BrowserRouter>
+    </OwnerAuthProvider>
   );
 }

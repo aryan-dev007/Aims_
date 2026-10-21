@@ -46,14 +46,14 @@ export function useStockTotals() {
   const totalUnits = chartData.reduce((s, p) => s + p.total, 0);
 
   const adjust = useCallback(async (sku, delta) => {
+    const result = await adjustTotal(sku, delta);
     setTotals((prev) => {
       const next = { ...prev };
-      const value = Math.max(0, (next[sku] || 0) + delta);
+      const value = result.total;
       if (value === 0) delete next[sku];
       else next[sku] = value;
       return next;
     });
-    await adjustTotal(sku, delta);
   }, []);
 
   const reset = useCallback(async () => {

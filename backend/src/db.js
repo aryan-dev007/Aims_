@@ -40,7 +40,7 @@ async function testConnection() {
     await pool.query("SELECT 1");
     return true;
   } catch (err) {
-    console.error("[PG] Connection test failed:", err.message);
+    console.error("[PG] Connection test failed:", err);
     return false;
   }
 }

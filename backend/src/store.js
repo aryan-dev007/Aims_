@@ -170,6 +170,52 @@ class JsonStore {
     return invoice;
   }
 
+  commitInvoice(invoice, thresholds) {
+    const next = JSON.parse(JSON.stringify(this.data));
+    const applied = {};
+    for (const item of invoice.items) {
+      applied[item.sku] = (applied[item.sku] || 0) + item.qty;
+    }
+
+    for (const [sku, qty] of Object.entries(applied)) {
+      const product = next.products[sku] || {};
+      const threshold = product.threshold ?? thresholds[sku] ?? 0;
+      next.products[sku] = {
+        ...product,
+        count: (product.count || 0) + qty,
+        threshold,
+        updatedAt: invoice.createdAt,
+      };
+      next.totals[sku] = (next.totals[sku] || 0) + qty;
+      for (const alert of next.alerts.filter((entry) => entry.sku === sku && !entry.acked)) {
+        if (next.products[sku].count >= threshold) {
+          alert.acked = true;
+          alert.ackedAt = invoice.createdAt;
+        } else {
+          alert.count = next.products[sku].count;
+          alert.needed = threshold - next.products[sku].count;
+        }
+      }
+    }
+
+    next.invoices.push(invoice);
+    const tempFile = `${this.file}.${process.pid}.tmp`;
+    fs.mkdirSync(path.dirname(this.file), { recursive: true });
+    try {
+      fs.writeFileSync(tempFile, JSON.stringify(next, null, 2));
+      fs.renameSync(tempFile, this.file);
+    } catch (error) {
+      try {
+        fs.unlinkSync(tempFile);
+      } catch {
+        // The original persistence error is the actionable failure.
+      }
+      throw error;
+    }
+    this.data = next;
+    return applied;
+  }
+
   getInvoice(id) {
     return this.getInvoices().find((i) => i.id === id) || null;
   }

@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY docker/predict-requirements.txt ./
+RUN pip install --no-cache-dir -r predict-requirements.txt
+
+COPY predict_server.py data.yaml ./
+COPY models/best.onnx ./models/best.onnx
+
+EXPOSE 5555
+
+CMD ["python", "predict_server.py", "--model", "models/best.onnx", "--port", "5555", "--imgsz", "640"]

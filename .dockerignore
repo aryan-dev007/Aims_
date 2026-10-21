@@ -1,0 +1,24 @@
+.git
+.github
+.env
+**/.env
+**/.env.*
+**/node_modules
+frontend/dist/
+frontend/.vite/
+**/.venv
+**/__pycache__
+**/*.pyc
+**/*.ipynb
+*.zip
+models/*.pt
+runs/
+grocery.v9i.yolov8/
+dataset_zip_tmp/
+focused_dataset/
+unified_dataset/
+subset/
+local_dataset_to_merge/
+local_/
+New_dataset_with_metadats/
+Grocery snacks images/

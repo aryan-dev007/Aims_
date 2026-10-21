@@ -8,7 +8,10 @@
     "dev": "node --watch src/server.js",
     "db:migrate": "node src/migrate.js",
     "db:test": "node src/test_pg.js",
-    "test:lowstock": "node test/lowstock.test.js"
+    "test:auth": "node test/auth.test.js",
+    "test:lowstock": "node test/lowstock.test.js",
+    "test:invoice-parser": "node test/invoiceParser.test.js",
+    "test:invoice-workflow": "node test/invoiceWorkflow.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

@@ -1,24 +1,39 @@
 /**
  * Centralized API client for all backend communication.
- * Vite dev server proxies /api/* to http://localhost:4000
+ * The dev server or Docker reverse proxy forwards same-origin API requests.
  */
 
 const BASE = '';  // proxy handles it
 
 async function request(endpoint, options = {}) {
   const url = `${BASE}${endpoint}`;
+  const token = sessionStorage.getItem('ownerToken');
+  const headers = new Headers(options.headers || {});
+  headers.set('Content-Type', 'application/json');
+  if (token) headers.set('Authorization', `Bearer ${token}`);
   const config = {
-    headers: { 'Content-Type': 'application/json' },
     ...options,
+    headers,
   };
 
   const res = await fetch(url, config);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || `HTTP ${res.status}`);
+    const error = new Error(err.error || `HTTP ${res.status}`);
+    error.status = res.status;
+    throw error;
   }
   return res.json();
 }
+
+export const loginOwner = (username, password) =>
+  request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  }).then((result) => {
+    sessionStorage.setItem('ownerToken', result.token);
+    return result;
+  });
 
 // ---- Stock ----
 export const getStock = () => request('/api/stock');
@@ -61,6 +76,8 @@ export const getInvoices = () => request('/api/invoices');
 export const getInvoice = (id) => request(`/api/invoices/${id}`);
 export const createInvoice = (body = {}) =>
   request('/api/invoices', { method: 'POST', body: JSON.stringify(body) });
+export const parseInvoiceDocument = (body) =>
+  request('/api/invoices/parse', { method: 'POST', body: JSON.stringify(body) });
 
 // ---- Snapshots ----
 export const getSnapshots = (limit = 100) =>

@@ -9,6 +9,7 @@ venv/
 pip-log.txt
 pip-delete-this-directory.txt
 .venv
+.venv-invoice-ocr/
 .env
 yolov8n.pt
 

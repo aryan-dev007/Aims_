@@ -2,6 +2,7 @@ import React, { useCallback, useState } from 'react';
 import { useStockTotals } from '../hooks/useStockTotals';
 import TotalsChart from '../components/TotalsChart';
 import ConnectionStatus from '../components/ConnectionStatus';
+import { useOwnerAuth } from '../components/OwnerAuthProvider';
 
 function initials(name) {
   const words = String(name || '').trim().split(/\s+/).filter(Boolean);
@@ -23,31 +24,36 @@ export default function ManageProducts() {
 
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const { runOwnerAction } = useOwnerAuth();
 
   const onAdjust = useCallback(
     async (sku, delta) => {
       setError('');
       setMessage('');
       try {
-        await adjust(sku, delta);
-        setMessage(delta < 0 ? `Decreased ${sku}` : `Increased ${sku}`);
+        await runOwnerAction(async () => {
+          await adjust(sku, delta);
+          setMessage(delta < 0 ? `Decreased ${sku}` : `Increased ${sku}`);
+        });
       } catch (err) {
         setError(err.message || 'Failed to update product');
       }
     },
-    [adjust]
+    [adjust, runOwnerAction]
   );
 
   const onReset = useCallback(async () => {
     setError('');
     setMessage('');
     try {
-      await reset();
-      setMessage('All totals cleared');
+      await runOwnerAction(async () => {
+        await reset();
+        setMessage('All totals cleared');
+      });
     } catch (err) {
       setError(err.message || 'Failed to reset totals');
     }
-  }, [reset]);
+  }, [reset, runOwnerAction]);
 
   return (
     <>

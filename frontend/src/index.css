@@ -765,6 +765,94 @@ body {
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
 }
 
+.auth-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.52);
+  backdrop-filter: blur(4px);
+}
+
+.auth-dialog {
+  width: min(100%, 420px);
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.25);
+}
+
+.auth-dialog h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.auth-dialog > p:not(.note) {
+  margin: 8px 0 20px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.auth-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.invoice-upload {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.invoice-upload strong {
+  font-size: 0.9rem;
+}
+
+.invoice-upload p {
+  margin: 5px 0 0;
+}
+
+.invoice-upload-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.invoice-upload-button input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.invoice-product-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.invoice-ocr-description {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .line-items-head {
   display: flex;
   align-items: center;
@@ -785,7 +873,7 @@ body {
 
 .line-item {
   display: grid;
-  grid-template-columns: 1fr 84px 110px 92px 36px;
+  grid-template-columns: minmax(150px, 1fr) 84px 110px 92px 36px;
   gap: 8px;
   align-items: center;
 }

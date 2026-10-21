@@ -10,14 +10,17 @@ const pgInventory = require("./pgInventory");
 
 const app = express();
 const server = http.createServer(app);
+const socketOrigins = process.env.FRONTEND_ORIGINS
+  ? process.env.FRONTEND_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean)
+  : ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8080"];
 
 // Make pgInventory available to route handlers
 app.set("pgInventory", pgInventory);
 
-// Socket.IO with CORS for the Vite dev server
+// Socket.IO CORS for the dashboard origin(s)
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
+    origin: socketOrigins,
     methods: ["GET", "POST"],
   },
   maxHttpBufferSize: 5e6, // 5 MB for base64 frames

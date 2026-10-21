@@ -83,9 +83,9 @@ async function migrate() {
   const ok = await testConnection();
   if (!ok) {
     console.error(
-      "[MIGRATE] Cannot connect. Make sure PostgreSQL is running and the " +
-        "aims_inventory database exists.\n" +
-        "  Create it with:  CREATE DATABASE aims_inventory;"
+      "[MIGRATE] Cannot connect. Check PostgreSQL availability, the " +
+        "PGHOST/PGPORT/PGUSER/PGDATABASE settings, credentials, and that the " +
+        "aims_inventory database exists."
     );
     process.exit(1);
   }

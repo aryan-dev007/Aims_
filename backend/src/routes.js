@@ -2,6 +2,9 @@ const express = require("express");
 const store = require("./store");
 const svc = require("./stockService");
 const config = require("./config");
+const auth = require("./auth");
+const crypto = require("crypto");
+const { parseInvoiceDetections } = require("./invoiceParser");
 
 const router = express.Router();
 
@@ -37,6 +40,25 @@ async function persistDetections(req, perProduct) {
 router.get("/health", (req, res) => {
   const detectorOnline = req.app.get("detectorStatus")();
   res.json({ status: "ok", uptime: process.uptime(), detectorOnline });
+});
+
+// Owner sign-in for manual inventory operations.
+router.post("/auth/login", (req, res) => {
+  if (!auth.isConfigured()) {
+    return res.status(503).json({
+      error: "Owner authentication is not configured. Set OWNER_USERNAME, OWNER_PASSWORD, and a JWT_SECRET of at least 32 characters.",
+    });
+  }
+  const { username, password } = req.body || {};
+  if (!auth.verifyOwnerCredentials(username, password)) {
+    return res.status(401).json({ error: "Invalid owner username or password" });
+  }
+
+  res.json({
+    token: auth.createOwnerToken(),
+    tokenType: "Bearer",
+    expiresIn: auth.TOKEN_LIFETIME_SECONDS,
+  });
 });
 
 // Ingest a monitor.py JSON payload: { per_product: {...}, timestamp }
@@ -87,7 +109,7 @@ router.get("/stock/totals", (req, res) => {
 });
 
 // Reset all running scan totals
-router.post("/stock/totals/reset", (req, res) => {
+router.post("/stock/totals/reset", auth.requireOwner, (req, res) => {
   const totals = svc.resetTotals();
 
   const io = req.app.get("io");
@@ -106,7 +128,7 @@ router.post("/stock/totals/reset", (req, res) => {
 });
 
 // Manually adjust a product's running total. Body: { sku, delta } (delta +1/-1)
-router.post("/stock/totals/adjust", (req, res) => {
+router.post("/stock/totals/adjust", auth.requireOwner, (req, res) => {
   const { sku, delta } = req.body || {};
   let total;
   try {
@@ -417,13 +439,85 @@ router.post("/orders/:id/cancel", (req, res) => {
 // Invoices — goods received that add stock
 // ======================================================================
 
+const OCR_SERVER = process.env.INVOICE_OCR_SERVER || "http://127.0.0.1:5556";
+const MAX_INVOICE_BYTES = 8 * 1024 * 1024;
+
+router.post("/invoices/parse", auth.requireOwner, async (req, res) => {
+  const { document, mimeType } = req.body || {};
+  if (
+    typeof document !== "string" ||
+    !["application/pdf", "image/png", "image/jpeg", "image/jpg"].includes(mimeType)
+  ) {
+    return res.status(400).json({ error: "Upload a PDF, PNG, or JPEG invoice." });
+  }
+  if (document.length > Math.ceil(MAX_INVOICE_BYTES * 4 / 3) + 4) {
+    return res.status(413).json({ error: "Invoice files must be no larger than 8 MB." });
+  }
+
+  let fileBytes;
+  try {
+    fileBytes = Buffer.from(document, "base64");
+  } catch {
+    return res.status(400).json({ error: "The uploaded document is not valid base64 data." });
+  }
+  if (fileBytes.length === 0 || fileBytes.length > MAX_INVOICE_BYTES) {
+    return res.status(413).json({ error: "Invoice files must be no larger than 8 MB." });
+  }
+  if (fileBytes.toString("base64").replace(/=+$/, "") !== document.replace(/=+$/, "")) {
+    return res.status(400).json({ error: "The uploaded document is not valid base64 data." });
+  }
+
+  const validSignature =
+    (mimeType === "application/pdf" && fileBytes.subarray(0, 5).toString() === "%PDF-") ||
+    (mimeType === "image/png" && fileBytes.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) ||
+    ((mimeType === "image/jpeg" || mimeType === "image/jpg") &&
+      fileBytes[0] === 0xff && fileBytes[1] === 0xd8 && fileBytes[2] === 0xff);
+  if (!validSignature) {
+    return res.status(400).json({ error: "The file contents do not match the selected PDF, PNG, or JPEG format." });
+  }
+
+  try {
+    const ocrResponse = await fetch(`${OCR_SERVER}/ocr`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ document, mimeType }),
+      signal: AbortSignal.timeout(120000),
+    });
+    const ocrResult = await ocrResponse.json().catch(() => ({}));
+    if (!ocrResponse.ok) {
+      return res.status(ocrResponse.status === 400 ? 400 : 502).json({
+        error: ocrResult.error || "Invoice OCR service could not process this document.",
+      });
+    }
+
+    const parsed = parseInvoiceDetections(ocrResult.pages, svc.productStatusList());
+    if (!parsed.items.length) {
+      return res.status(422).json({
+        error: "No invoice line items could be identified. Use manual entry or upload a clearer invoice.",
+      });
+    }
+    res.json({
+      ...parsed,
+      documentHash: crypto.createHash("sha256").update(fileBytes).digest("hex"),
+    });
+  } catch (err) {
+    console.error("[INVOICE OCR]", err.message);
+    res.status(503).json({
+      error: "Invoice OCR service is unavailable. Start the PaddleOCR service and try again.",
+    });
+  }
+});
+
 // Create a received invoice and add its quantities to stock.
 // Body: { invoiceNumber?, supplier?, invoiceDate?, receivedBy?, items: [{ sku, qty, unitPrice? }] }
-router.post("/invoices", async (req, res) => {
+router.post("/invoices", auth.requireOwner, async (req, res) => {
   let result;
   try {
     result = svc.createInvoice(req.body || {});
   } catch (err) {
+    if (err.code === "DUPLICATE_INVOICE") {
+      return res.status(409).json({ error: err.message });
+    }
     return res.status(400).json({ error: err.message });
   }
 

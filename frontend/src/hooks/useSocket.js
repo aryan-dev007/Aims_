@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io } from 'socket.io-client';
 
-const SOCKET_URL = 'http://localhost:4000';
-
 /**
  * Custom hook that connects to the Socket.IO backend for real-time updates.
  * Returns { latestStock, latestFrame, detectorOnline, connected, detectionLog, pgInventory }
@@ -18,7 +16,7 @@ export function useSocket() {
   const lastFrameTime = useRef(0);
 
   useEffect(() => {
-    const socket = io(SOCKET_URL, {
+    const socket = io({
       transports: ['websocket', 'polling'],
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
@@ -85,4 +83,3 @@ export function useSocket() {
 
   return { connected, latestStock, latestFrame, detectorOnline, detectionLog, pgInventory };
 }
-

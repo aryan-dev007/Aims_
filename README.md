@@ -2,7 +2,7 @@
 
 Vision-based inventory monitoring: detect and count grocery products from
 camera feeds with a custom-trained YOLOv8 model, analyse stock against
-thresholds, and feed a Node.js/n8n/Next.js automation pipeline.
+thresholds, and feed a Node.js/n8n/React automation pipeline.
 
 ## Dataset
 
@@ -29,17 +29,18 @@ thresholds, and feed a Node.js/n8n/Next.js automation pipeline.
 | `colab_train.ipynb` | Full 25-epoch GPU training + test evaluation + download |
 | `requirements.txt` | Python dependencies |
 | `models/best.pt` | Active model used by every script (drop the Colab model here) |
-| `backend/` | Node.js/Express REST API (stock ingest, alerts, reorder, n8n webhook) |
-| `dashboard/` | Next.js + TypeScript + Tailwind real-time dashboard |
+| `backend/` | Node.js/Express REST API (stock ingest, alerts, reorder, n8n webhook, invoice processing) |
+| `frontend/` | React + Vite real-time dashboard |
+| `invoice_ocr_server.py` | PaddleOCR service for PDF and image invoice extraction |
 | `n8n/` | n8n automation workflow (replenishment order + admin email alert) |
-| `start_stack.sh` | Start backend + dashboard with one command (WSL/Linux) |
+| `start_stack.sh` | Start prediction server, backend, and dashboard (WSL/Linux) |
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
 
-# Start the stack (backend + dashboard)
+# Start the stack (prediction server + backend + dashboard)
 bash start_stack.sh
 
 # Train on the local subset (CPU-friendly interim model)
@@ -78,7 +79,100 @@ python make_demo_video.py --n 6 --out runs/demo_shelf.mp4
 python export.py --model models/best.pt --format onnx
 ```
 
-Dashboard: http://localhost:3000 · Backend: http://localhost:4000
+Dashboard: http://localhost:5173 · Backend: http://localhost:4000 · Prediction server: http://localhost:5555
+
+## Run with Docker and connect a remote n8n
+
+The Compose stack runs the React dashboard, Express API, YOLO ONNX prediction
+server, PaddleOCR invoice service, and PostgreSQL. The dashboard is served on port `8080`; the API is
+published on port `4000` for n8n and camera/detector clients. PostgreSQL and
+the JSON stock store use persistent Docker volumes.
+The prediction container uses `models/best.onnx` at `640x640`, matching the
+default image size used by `export.py`; if you change the model's export size,
+update the `--imgsz` argument in `Dockerfile.predict` to match.
+
+1. Install Docker Desktop (Windows/macOS) or Docker Engine with the Compose
+   plugin (Linux). Copy the environment template:
+
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+
+   Edit `.env`: set a strong `POSTGRES_PASSWORD`, `OWNER_USERNAME`,
+   `OWNER_PASSWORD`, and a
+   randomly generated `JWT_SECRET` with at least 32 characters; replace
+   `N8N_HOST_OR_IP` in `ALERT_WEBHOOK_URL` with the LAN address of the machine
+   running n8n, and set a strong `ALERT_WEBHOOK_TOKEN`. The token must match
+   the `N8N_WEBHOOK_TOKEN` environment variable on n8n. Add the URL used to
+   open the dashboard to `FRONTEND_ORIGINS` (for example,
+   `http://192.168.1.20:8080`) if it will be accessed by LAN clients.
+
+2. Build and start the containers:
+
+   ```powershell
+   docker compose up --build -d
+   docker compose ps
+   ```
+
+   Open `http://localhost:8080`. The API health check is at
+   `http://localhost:4000/api/health`. To inspect startup logs, use
+   `   docker compose logs -f backend predict invoice-ocr`.
+
+3. Configure n8n on the other machine:
+   - Set `N8N_WEBHOOK_TOKEN` to the same value as `ALERT_WEBHOOK_TOKEN`, and
+     ensure its webhook path is `low-stock-alert`. Use the n8n production
+     webhook URL in `ALERT_WEBHOOK_URL`, then activate the workflow.
+   - Set n8n's `BACKEND_URL` to `http://<docker-host-LAN-IP>:4000` so the
+     scheduled workflow can call `/api/reorder` and `/api/orders`. Import
+     `n8n/low-stock-replenishment.workflow.json` if it is not already
+     imported, and configure its email credentials.
+   - Allow network traffic from the Docker host to n8n's webhook port, and
+     from the n8n host to the Docker host's API port `4000`. For cameras or
+     detector clients on other machines, use
+     `http://<docker-host-LAN-IP>:4000` as the API URL.
+
+Owner username and password authentication protects manual stock increases/decreases,
+running-total resets, and invoice stock receipts. On the first such action,
+the dashboard prompts for both `OWNER_USERNAME` and `OWNER_PASSWORD`; the
+signed JWT is held only for the current browser tab and expires after one hour.
+Automated detector updates do not require owner login. Keep the backend API on
+a trusted network.
+
+### Uploading invoices with OCR
+
+The Invoices page accepts PDF, PNG, and JPEG files up to 8 MB. PaddleOCR reads
+the document and suggests invoice fields, product matches, quantities, and
+prices. Review and correct every extracted line, select a known product for
+each row, and explicitly confirm before stock is updated. Files are processed
+in memory and are not stored by the OCR service. Re-uploading the same document
+or reusing an invoice number already recorded is rejected.
+
+The Docker Compose stack builds and starts the separate PaddleOCR service
+automatically. For local Windows development, use Python 3.11 or 3.12 in a
+dedicated environment:
+
+```powershell
+py install 3.11
+py -3.11 -m venv .venv-invoice-ocr
+.\.venv-invoice-ocr\Scripts\python.exe -m pip install -r invoice_ocr_requirements.txt
+$env:INVOICE_OCR_PYTHON = (Resolve-Path .\.venv-invoice-ocr\Scripts\python.exe).Path
+.\start_stack.ps1
+```
+
+The first OCR request may download PaddleOCR models. Invoice extraction is
+layout-dependent; verify OCR suggestions against the source document before
+confirming a receipt.
+
+The n8n host must be reachable from the backend container at
+`ALERT_WEBHOOK_URL`; `localhost` in that setting means the backend container,
+not the Docker host or the n8n machine. Similarly, n8n must use the Docker
+host's LAN IP in `BACKEND_URL`, not `localhost`. Restrict published ports to
+trusted networks with your firewall; owner authentication does not replace
+network-level protections, so do not expose the API directly to the public
+internet.
+
+Stop the stack with `docker compose down`. Data remains in Docker volumes.
+`docker compose down -v` also deletes the persistent database and stock data.
 
 ## Backend integration
 
@@ -106,6 +200,12 @@ npm install
 npm start        # http://localhost:4000
 ```
 
+When running outside Docker, set `OWNER_USERNAME`, `OWNER_PASSWORD`, and
+`JWT_SECRET` in the backend process environment before starting it.
+`JWT_SECRET` must contain at least 32 characters; use a unique random value and
+keep all three settings private. If any setting is missing or invalid, manual
+stock changes stay disabled.
+
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | POST | `/api/stock/ingest` | Accept `{ per_product, timestamp }`, update DB, open/close alerts |
@@ -126,6 +226,7 @@ npm start        # http://localhost:4000
 | POST | `/api/orders/:id/approve` | Approve an order (replenishment confirmation) |
 | POST | `/api/orders/:id/cancel` | Cancel an order |
 | POST | `/api/invoices` | Receive an invoice and add its quantities to stock (body `{ invoiceNumber?, supplier?, invoiceDate?, items: [{ sku, qty, unitPrice? }] }`) |
+| POST | `/api/invoices/parse` | Authenticated OCR extraction and product-match suggestions for a base64 PDF/PNG/JPEG document |
 | GET  | `/api/invoices` | List received invoices (most recent first) |
 | GET  | `/api/invoices/:id` | Single invoice |
 
